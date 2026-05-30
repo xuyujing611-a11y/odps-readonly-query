@@ -142,21 +142,23 @@ def action_sql_hints(payload: dict[str, Any]) -> dict[str, str] | None:
     return None
 
 
-def _iter_partition_tokens(rows: list[dict[str, object]]):
+def _partition_tokens_by_row(rows: list[dict[str, object]], *, partition_col: str) -> list[list[str]]:
+    rows_tokens: list[list[str]] = []
     for row in rows:
+        row_tokens: list[str] = []
         for value in row.values():
             items = value if isinstance(value, list) else [value]
             for item in items:
-                yield str(item)
+                token = str(item)
+                match = _PARTITION_RE.fullmatch(token)
+                if match and match.group(1) == partition_col:
+                    row_tokens.append(match.group(2))
+        if row_tokens:
+            rows_tokens.append(row_tokens)
+    return rows_tokens
 
 
-def extract_latest_partition(rows: list[dict[str, object]], *, partition_col: str = "pt") -> dict[str, object]:
-    values: list[str] = []
-    for token in _iter_partition_tokens(rows):
-        match = _PARTITION_RE.fullmatch(token)
-        if match and match.group(1) == partition_col:
-            values.append(match.group(2))
-
+def _latest_from_values(values: list[str], *, partition_col: str, partition_count: int) -> dict[str, object]:
     if not values:
         raise GatewayError(f"No {partition_col}=yyyymmdd partition found.")
 
@@ -165,8 +167,79 @@ def extract_latest_partition(rows: list[dict[str, object]], *, partition_col: st
         "partition_col": partition_col,
         "partition_value": latest_value,
         "partition": f"{partition_col}={latest_value}",
-        "partition_count": len(rows),
+        "partition_count": partition_count,
     }
+
+
+def _ambiguous_latest_partition(
+    rows_tokens: list[list[str]],
+    *,
+    partition_col: str,
+    partition_count: int,
+) -> dict[str, object]:
+    max_width = max(len(tokens) for tokens in rows_tokens)
+    candidates: list[dict[str, object]] = []
+    for token_index in range(max_width):
+        values = [tokens[token_index] for tokens in rows_tokens if token_index < len(tokens)]
+        if not values:
+            continue
+        latest_value = max(values)
+        candidates.append(
+            {
+                "token_index": token_index,
+                "partition_value": latest_value,
+                "partition": f"{partition_col}={latest_value}",
+            }
+        )
+
+    return {
+        "status": "ambiguous",
+        "partition_col": partition_col,
+        "partition_count": partition_count,
+        "candidates_by_token_index": candidates,
+        "message": (
+            f"SHOW PARTITIONS returned ambiguous multiple {partition_col}=yyyymmdd tokens per row; "
+            "latest-partition will not guess which token is queryable. Use catalog columns/partitions "
+            "to verify the real partition key, or rerun with --token-index after human confirmation."
+        ),
+    }
+
+
+def extract_latest_partition(
+    rows: list[dict[str, object]],
+    *,
+    partition_col: str = "pt",
+    token_index: int | None = None,
+) -> dict[str, object]:
+    rows_tokens = _partition_tokens_by_row(rows, partition_col=partition_col)
+    if not rows_tokens:
+        raise GatewayError(f"No {partition_col}=yyyymmdd partition found.")
+
+    if token_index is not None:
+        if token_index < 0:
+            raise GatewayError(f"token_index must be >= 0, got: {token_index}")
+        values = [tokens[token_index] for tokens in rows_tokens if token_index < len(tokens)]
+        result = _latest_from_values(values, partition_col=partition_col, partition_count=len(rows))
+        result["token_index"] = token_index
+        return result
+
+    if any(len(tokens) > 1 for tokens in rows_tokens):
+        return _ambiguous_latest_partition(rows_tokens, partition_col=partition_col, partition_count=len(rows))
+
+    return _latest_from_values(
+        [tokens[0] for tokens in rows_tokens],
+        partition_col=partition_col,
+        partition_count=len(rows),
+    )
+
+
+def _parse_token_index(value: object) -> int | None:
+    if value is None or value == "":
+        return None
+    token_index = int(value)
+    if token_index < 0:
+        raise GatewayError(f"token_index must be >= 0, got: {value}")
+    return token_index
 
 
 def handle_gateway_payload(
@@ -204,7 +277,8 @@ def handle_gateway_payload(
         catalog_error = str(exc)
     if action == "latest-partition":
         partition_col = str(payload.get("partition_col", "pt")).strip()
-        return [extract_latest_partition(rows, partition_col=partition_col)]
+        token_index = _parse_token_index(payload.get("token_index"))
+        return [extract_latest_partition(rows, partition_col=partition_col, token_index=token_index)]
     if action == "table-logic":
         table = str(payload.get("table", "")).strip()
         return resolve_table_logic(

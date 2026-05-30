@@ -64,6 +64,13 @@ python .\scripts\start_gateway.py
 
 When the user replies `继续`, retry the original `gateway_query.py` command.
 
+## Partition Ambiguity Rules
+
+- Do not infer a second partition column from `SHOW PARTITIONS` output shape. A row like `["pt=20250921", "pt=20250923"]` does not prove there is a `pt2` column.
+- Before explaining partition columns, run `python .\scripts\gateway_query.py --json catalog columns <qualified_table>` and identify rows where `is_partition_key` is true.
+- If the real partition key list contains only `pt`, query only `WHERE pt = '<value>'`; never invent `pt2`, `ds2`, or another partition column name.
+- If `latest-partition` returns `status: ambiguous`, report `candidates_by_token_index` and say the tool refuses to guess. Ask the human which token position is the business partition, or verify with catalog partitions and row counts.
+- After human confirmation, rerun with `--token-index <n>`, for example `python .\scripts\gateway_query.py latest-partition <qualified_table> --token-index 0`.
 ## Table Name Normalization
 
 - If the user provides a fully qualified table such as `yh_doc_cdm.some_table`, use that exact table first.

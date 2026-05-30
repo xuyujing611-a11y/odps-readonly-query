@@ -112,6 +112,19 @@ When prompted, enter the `.env.enc` password locally. Keep this PowerShell windo
 
 The gateway writes a local `gateway_state.json` containing a loopback URL and temporary token. This file is ignored by git and is only used by `gateway_query.py` on the same machine.
 
+## Partition Ambiguity
+
+`SHOW PARTITIONS` can return multiple `pt=YYYYMMDD` tokens in one displayed row. That does not mean there is a `pt2` column. Agents should verify real partition keys with:
+
+```powershell
+python .\scripts\gateway_query.py --json catalog columns <qualified_table>
+```
+
+If `latest-partition` returns `status: ambiguous`, it will include `candidates_by_token_index` instead of guessing. A human can choose a confirmed token position and rerun:
+
+```powershell
+python .\scripts\gateway_query.py latest-partition <qualified_table> --token-index 0
+```
 ## Agent Commands
 
 After the gateway is running, the agent can query through the local gateway:

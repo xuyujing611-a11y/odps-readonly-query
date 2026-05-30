@@ -199,14 +199,35 @@ class GatewayTests(unittest.TestCase):
             },
         )
 
-    def test_extract_latest_partition_from_show_partitions_rows(self):
+    def test_extract_latest_partition_reports_ambiguous_duplicate_partition_tokens(self):
+        rows = [
+            {"0": ["pt=20250921", "pt=20250922"]},
+            {"0": ["pt=20250921", "pt=20250923"]},
+        ]
+
+        latest = extract_latest_partition(rows)
+
+        self.assertEqual(latest["status"], "ambiguous")
+        self.assertEqual(latest["partition_col"], "pt")
+        self.assertEqual(latest["partition_count"], 2)
+        self.assertEqual(
+            latest["candidates_by_token_index"],
+            [
+                {"token_index": 0, "partition_value": "20250921", "partition": "pt=20250921"},
+                {"token_index": 1, "partition_value": "20250923", "partition": "pt=20250923"},
+            ],
+        )
+        self.assertIn("ambiguous", latest["message"])
+        self.assertNotIn("partition_value", latest)
+
+    def test_extract_latest_partition_can_use_explicit_token_index(self):
         rows = [
             {"0": ["pt=20241129", "pt=20250715"]},
             {"0": ["pt=20241129", "pt=20260527"]},
             {"0": ["pt=20241129", "pt=20251231"]},
         ]
 
-        latest = extract_latest_partition(rows)
+        latest = extract_latest_partition(rows, token_index=1)
 
         self.assertEqual(
             latest,
@@ -215,6 +236,7 @@ class GatewayTests(unittest.TestCase):
                 "partition_value": "20260527",
                 "partition": "pt=20260527",
                 "partition_count": 3,
+                "token_index": 1,
             },
         )
 
@@ -229,7 +251,7 @@ class GatewayTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             rows = handle_gateway_payload(
-                {"action": "latest-partition", "table": "yh_doc_cdm.dim_matl"},
+                {"action": "latest-partition", "table": "yh_doc_cdm.dim_matl", "token_index": 1},
                 executor,
                 audit_path=Path(tmp) / "audit.jsonl",
             )

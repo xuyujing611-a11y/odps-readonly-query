@@ -14,7 +14,7 @@ class GatewayClientTests(unittest.TestCase):
                 {"0": ["pt=20241129", "pt=20260527"]},
             ]
 
-        rows = latest_partition_rows("yh_doc_cdm.dim_matl", fetcher=fetcher)
+        rows = latest_partition_rows("yh_doc_cdm.dim_matl", token_index=1, fetcher=fetcher)
 
         self.assertEqual(rows[0]["partition_value"], "20260527")
         self.assertEqual(seen_payloads[0]["action"], "partitions")

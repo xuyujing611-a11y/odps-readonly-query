@@ -49,11 +49,12 @@ def latest_partition_rows(
     *,
     partition_col: str = "pt",
     limit: int = 10000,
+    token_index: int | None = None,
     fetcher=None,
 ) -> list[dict[str, object]]:
     fetch = fetcher or (lambda payload: post_query(payload))
     rows = fetch({"action": "partitions", "table": table, "limit": limit})
-    return [extract_latest_partition(rows, partition_col=partition_col)]
+    return [extract_latest_partition(rows, partition_col=partition_col, token_index=token_index)]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -75,6 +76,11 @@ def build_parser() -> argparse.ArgumentParser:
     latest_partition.add_argument("table")
     latest_partition.add_argument("--partition-col", default="pt")
     latest_partition.add_argument("--limit", type=int, default=10000)
+    latest_partition.add_argument(
+        "--token-index",
+        type=int,
+        help="Use a specific matching partition token position when SHOW PARTITIONS is ambiguous",
+    )
 
     catalog = subparsers.add_parser(
         "catalog",
@@ -118,6 +124,7 @@ def payload_from_args(args: argparse.Namespace) -> dict[str, Any]:
             "table": args.table,
             "partition_col": args.partition_col,
             "limit": args.limit,
+            "token_index": args.token_index,
         }
     if args.command == "catalog":
         return {
@@ -131,13 +138,13 @@ def payload_from_args(args: argparse.Namespace) -> dict[str, Any]:
             "action": "catalog",
             "template": "logic",
             "table": args.table,
-            "limit": args.limit,
+            "limit": 20,
         }
     if args.command == "table-logic":
         return {
             "action": "table-logic",
             "table": args.table,
-            "limit": args.limit,
+            "limit": 20,
         }
     return {"action": "sql", "sql": args.sql, "limit": args.limit}
 
@@ -157,6 +164,7 @@ def main(argv: list[str] | None = None) -> int:
                     args.table,
                     partition_col=args.partition_col,
                     limit=args.limit,
+                    token_index=args.token_index,
                     fetcher=lambda fallback_payload: post_query(fallback_payload, state_path=args.state),
                 )
         else:
