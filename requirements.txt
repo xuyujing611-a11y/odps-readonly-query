@@ -1,0 +1,7 @@
+pyodps==0.12.6
+alibabacloud_dataworks_public20200518==8.0.4
+requests==2.34.2
+urllib3==2.7.0
+idna==3.16
+certifi==2026.5.20
+chardet==5.2.0
