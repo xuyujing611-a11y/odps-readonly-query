@@ -1,11 +1,21 @@
 ---
 name: odps-readonly-query
-description: Use when querying Alibaba Cloud MaxCompute or ODPS tables, checking table row counts, partitions, report model data quality, table SQL logic, DataWorks node code or schedule, system catalog metadata, or diagnosing report data issues with the bundled odps_report_doctor read-only gateway. Requires local gateway_query.py or safe_query.py and forbids direct PyODPS, odpscmd, DataWorks write operations, SQL mutation, or asking users to paste secrets in chat.
+description: Use when querying Alibaba Cloud MaxCompute or ODPS tables, checking table row counts, partitions, report model data quality, table SQL logic, DataWorks node code or schedule, system catalog metadata, or diagnosing report data issues through the bundled odps_report_doctor read-only gateway. Default mode uses a human-started local gateway unlocked from .env.enc; agents must not read secrets, decrypt config files, run direct PyODPS, use odpscmd, call DataWorks write APIs, or execute mutating SQL.
 ---
 
 # ODPS Read-Only Query
 
-Use this skill for Alibaba Cloud MaxCompute / ODPS / DataWorks table queries, table logic lookup, scheduling lookup, metadata discovery, and report data diagnosis through the local `odps_report_doctor` tooling.
+Use this skill for Alibaba Cloud MaxCompute / ODPS / DataWorks table queries through the local `odps_report_doctor` gateway.
+
+## Operating Model
+
+Default to encrypted-config Mode B:
+
+1. A human operator places `.env.enc` in the tool project root.
+2. The human operator starts `python .\scripts\start_gateway.py` and enters the `.env.enc` password locally.
+3. The agent uses only `python .\scripts\gateway_query.py ...` while that gateway window stays open.
+
+Do not open, read, decrypt, copy, upload, replace, or ask the user to paste `.env`, `.env.enc`, AK/SK, or passwords. If the gateway is unavailable, ask the human to start it; do not try to unlock the config yourself.
 
 ## Locate The Tool Project
 
@@ -13,30 +23,31 @@ Before querying, locate the downloaded `odps_report_doctor` project root. Prefer
 
 1. Use `$env:ODPS_REPORT_DOCTOR_ROOT` if it is set and contains `scripts\gateway_query.py` plus `report_doctor\`.
 2. Use the current working directory if it contains `scripts\gateway_query.py` plus `report_doctor\`.
-3. Search nearby workspace folders for `odps_report_doctor`.
+3. Search nearby workspace folders for `odps-readonly-query` or `odps_report_doctor`.
 4. If still not found, ask the user where they downloaded the project.
 
 Run all commands from the project root. Do not assume the original author's local path.
 
-## Required Local Setup
+## Required Setup Check
 
-The project root should contain a local `.env` or `.env.enc`. Never ask the user to paste AK/SK, `.env`, `.env.enc`, or passwords into chat. If configuration is missing, tell the user to place their provided `.env` or `.env.enc` in the project root, or to copy `.env.example` to `.env` and edit it locally.
-
-Install dependencies into the project directory, not global Python:
+The project should already have dependencies installed with:
 
 ```powershell
 python .\scripts\bootstrap_vendor.py
 ```
 
+For normal agent work, do not run `safe_query.py test-connection`, because it may load encrypted config directly. Prefer checking whether the gateway is reachable by trying the requested `gateway_query.py` command.
+
 ## Hard Rules
 
+- Never ask the user to paste AK/SK, `.env`, `.env.enc`, or passwords into chat.
+- Never read or decrypt `.env.enc`; only the human-started gateway may load it.
 - Never run direct ad hoc PyODPS `execute_sql()` code.
 - Never run `odpscmd` for this workflow.
-- Never call DataWorks write/run/deploy APIs. Allowed DataWorks APIs are read-only metadata/code lookups such as `ListNodesByOutput`, `GetNode`, `GetNodeCode`, `SearchMetaTables`, and `GetMetaTableProducingTasks`.
+- Never call DataWorks write/run/deploy APIs. Allowed DataWorks APIs are read-only metadata/code lookups performed by the gateway, such as `ListNodesByOutput`, `GetNode`, `GetNodeCode`, `SearchMetaTables`, and `GetMetaTableProducingTasks`.
 - Refuse or rewrite any user SQL involving `INSERT`, `DELETE`, `UPDATE`, `DROP`, `ALTER`, `CREATE`, `MERGE`, `TRUNCATE`, or `OVERWRITE`. DataWorks node code may contain those words as text; do not execute it.
-- Prefer an already-started local gateway for interactive work.
-- If the gateway is not running or `gateway_query.py` cannot connect, stop and ask the user to start the gateway. Do not fall back to password prompts unless the user explicitly asks for one-shot mode.
-- Fallback one-shot queries may execute only through `scripts\safe_query.py` or wrappers that call the same safe runner.
+- Use `scripts\gateway_query.py` for interactive querying.
+- If `gateway_query.py` cannot connect, stop and ask the user to start the local gateway. Do not fall back to one-shot config loading unless the user explicitly overrides Mode B.
 
 ## Gateway Not Running
 
@@ -65,19 +76,7 @@ When the user replies `继续`, retry the original `gateway_query.py` command.
 - Stop after the first qualified candidate returns a useful result.
 - If the user corrects a typo or provides a new exact table, abandon the old candidate and query the new exact table.
 
-## Standard Commands
-
-Check connection:
-
-```powershell
-python .\scripts\safe_query.py test-connection
-```
-
-Start unlocked read-only gateway:
-
-```powershell
-python .\scripts\start_gateway.py
-```
+## Standard Gateway Commands
 
 Show partitions:
 
@@ -133,11 +132,11 @@ For "查某张表的调度信息和逻辑 SQL":
 - Prefer partition-scoped queries.
 - Treat `--bizdate 20260527` as `pt = '20260527'`.
 - For arbitrary safe SQL, use the gateway `sql` command only for `SELECT` / `WITH` queries that pass the local safety gate and, when appropriate, include a `pt` filter.
-- For report diagnostics, prefer checked-in templates:
+
+Example:
 
 ```powershell
-python .\scripts\safe_query.py run-sql .\diagnostics\<report>\<check>.sql --bizdate 20260527
-python .\scripts\safe_query.py doctor <report_name> --bizdate 20260527
+python .\scripts\gateway_query.py sql "SELECT COUNT(1) AS row_cnt FROM yh_doc_cdm.dim_matl WHERE pt = '20260527'"
 ```
 
 ## Reporting Format
@@ -148,5 +147,5 @@ Include:
 - command executed
 - partition, catalog method, or DataWorks lookup method
 - row count, partition, metadata, schedule, node code summary, or key result
-- whether the query went through `gateway_query.py` or `safe_query.py`
-- limitations, permission failures, or failed candidates
+- confirmation that the query went through `gateway_query.py`
+- limitations, permission failures, gateway-not-running status, or failed candidates

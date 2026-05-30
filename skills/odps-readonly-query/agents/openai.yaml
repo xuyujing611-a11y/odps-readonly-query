@@ -1,6 +1,6 @@
-﻿interface:
+interface:
   display_name: "ODPS Read-Only Query"
-  short_description: "Query ODPS and DataWorks through a local read-only gateway."
-  default_prompt: "Use $odps-readonly-query to inspect an ODPS table with the local read-only gateway."
+  short_description: "Query ODPS through a human-unlocked local encrypted gateway."
+  default_prompt: "Use $odps-readonly-query to inspect an ODPS table through the human-started .env.enc local gateway."
 policy:
   allow_implicit_invocation: true
