@@ -39,6 +39,21 @@ Run commands from the project root. Do not assume the original author's local pa
 - Long multi-step investigation: use `--evidence-log outputs\investigations\<case>\evidence.jsonl` and keep a concise evidence trail. See `references/workflows.md`.
 - Project-specific prefix defaults: see `references/project-context.md`.
 
+## Behavior By Task Depth
+
+Use the lightest workflow that can answer the user correctly.
+
+**Simple lookups** include row counts, latest partition checks, small samples, one-field profiles, and direct table metadata questions. For these, run the smallest safe command, answer the verified result, and do not start lineage or root-cause work unless the result is ambiguous or the user asks why.
+
+**Complex diagnosis** includes report differences, missing/incorrect values, data quality bugs,口径 questions, upstream logic checks, recurring production issues, and any request that asks for cause, impact, or fix direction. For these:
+
+- Use an evidence log unless the investigation is only one or two commands.
+- Start from the exact table/key/date/entity the user gave, then trace toward ADS, DWS, DWD, ODS, source, or DataWorks logic as far as read-only access allows.
+- Every conclusion must be backed by an executed `gateway_query.py` command or SQL result. DataWorks node SQL alone explains intent; it is not proof that data matches that intent.
+- Drill to the finest useful grain before calling the root cause verified: order, account, material, partner, source row, unmatched bucket, partition token, or exact filter/rule.
+- Stop and mark the status as `ambiguous` or `blocked` if partition selection, schema discovery, permissions, or missing gateway state prevents verification.
+- Do not over-investigate simple查数 tasks after the requested number or sample is verified.
+
 ## Hard Rules
 
 - Never run direct ad hoc PyODPS `execute_sql()` code.
