@@ -5,6 +5,7 @@ import json
 import sys
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +45,30 @@ def post_query(payload: dict[str, Any], *, state_path: str | Path = STATE_PATH) 
     return result["rows"]
 
 
+def check_health(*, state_path: str | Path = STATE_PATH) -> list[dict[str, object]]:
+    try:
+        state = load_state(state_path)
+        request = urllib.request.Request(state["base_url"].rstrip("/") + "/health", method="GET")
+        with urllib.request.urlopen(request, timeout=10) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except Exception as exc:
+        return [{"status": "error", "message": str(exc)}]
+    return [{"status": "ok" if result.get("ok") else "error", "response": result}]
+
+
+def append_evidence_log(path: str | Path, *, payload: dict[str, Any], rows: list[dict[str, object]]) -> None:
+    evidence_path = Path(path)
+    evidence_path.parent.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "payload": payload,
+        "row_count": len(rows),
+        "rows": rows,
+    }
+    with evidence_path.open("a", encoding="utf-8") as file:
+        file.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+
+
 def latest_partition_rows(
     table: str,
     *,
@@ -61,7 +86,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Query the local ODPS read-only gateway")
     parser.add_argument("--state", default=str(STATE_PATH), help="Path to gateway state JSON")
     parser.add_argument("--json", action="store_true", help="Print rows as JSON")
+    parser.add_argument("--evidence-log", help="Append command payload and rows to a local JSONL evidence log")
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    subparsers.add_parser("health", help="Check local gateway health without reading encrypted config")
 
     count = subparsers.add_parser("count", help="Count one table partition")
     count.add_argument("table")
@@ -82,6 +110,41 @@ def build_parser() -> argparse.ArgumentParser:
         help="Use a specific matching partition token position when SHOW PARTITIONS is ambiguous",
     )
 
+    inspect_table = subparsers.add_parser("inspect-table", help="Collect table metadata, partition keys, and latest partition status")
+    inspect_table.add_argument("table")
+    inspect_table.add_argument("--partition-col", default="pt")
+    inspect_table.add_argument("--token-index", type=int)
+    inspect_table.add_argument("--catalog-limit", type=int, default=500)
+    inspect_table.add_argument("--partition-limit", type=int, default=10000)
+
+    quick_count = subparsers.add_parser("quick-count", help="Count a table partition, optionally resolving latest first")
+    quick_count.add_argument("table")
+    quick_count.add_argument("--bizdate", default="latest")
+    quick_count.add_argument("--partition-col", default="pt")
+    quick_count.add_argument("--token-index", type=int)
+
+    sample = subparsers.add_parser("sample", help="Sample rows from one table partition")
+    sample.add_argument("table")
+    sample.add_argument("--bizdate", required=True)
+    sample.add_argument("--partition-col", default="pt")
+    sample.add_argument("--limit", type=int, default=20)
+
+    field_profile = subparsers.add_parser("field-profile", help="Count top values for one field in one partition")
+    field_profile.add_argument("table")
+    field_profile.add_argument("field")
+    field_profile.add_argument("--bizdate", required=True)
+    field_profile.add_argument("--partition-col", default="pt")
+    field_profile.add_argument("--limit", type=int, default=50)
+
+    compare_tables = subparsers.add_parser("compare-tables", help="Compare count and metric sums between two partitioned tables")
+    compare_tables.add_argument("left_table")
+    compare_tables.add_argument("right_table")
+    compare_tables.add_argument("--key", required=True)
+    compare_tables.add_argument("--metric", required=True)
+    compare_tables.add_argument("--bizdate", required=True)
+    compare_tables.add_argument("--partition-col", default="pt")
+    compare_tables.add_argument("--limit", type=int, default=100)
+
     catalog = subparsers.add_parser(
         "catalog",
         help="Run controlled SYSTEM_CATALOG.INFORMATION_SCHEMA templates",
@@ -101,6 +164,10 @@ def build_parser() -> argparse.ArgumentParser:
     table_logic.add_argument("table")
     table_logic.add_argument("--limit", type=int, default=20)
 
+    trace_table = subparsers.add_parser("trace-table", help="Alias for table-logic; resolve lineage and DataWorks node SQL")
+    trace_table.add_argument("table")
+    trace_table.add_argument("--limit", type=int, default=20)
+
     sql = subparsers.add_parser("sql", help="Run a safe read-only SQL string")
     sql.add_argument("sql")
     sql.add_argument("--limit", type=int, default=200)
@@ -108,6 +175,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def payload_from_args(args: argparse.Namespace) -> dict[str, Any]:
+    if args.command == "health":
+        return {"action": "health"}
     if args.command == "count":
         return {
             "action": "count",
@@ -126,6 +195,52 @@ def payload_from_args(args: argparse.Namespace) -> dict[str, Any]:
             "limit": args.limit,
             "token_index": args.token_index,
         }
+    if args.command == "inspect-table":
+        return {
+            "action": "inspect-table",
+            "table": args.table,
+            "partition_col": args.partition_col,
+            "token_index": args.token_index,
+            "catalog_limit": args.catalog_limit,
+            "partition_limit": args.partition_limit,
+        }
+    if args.command == "quick-count":
+        return {
+            "action": "quick-count",
+            "table": args.table,
+            "bizdate": args.bizdate,
+            "partition_col": args.partition_col,
+            "limit": 1,
+            "token_index": args.token_index,
+        }
+    if args.command == "sample":
+        return {
+            "action": "sample",
+            "table": args.table,
+            "bizdate": args.bizdate,
+            "partition_col": args.partition_col,
+            "limit": args.limit,
+        }
+    if args.command == "field-profile":
+        return {
+            "action": "field-profile",
+            "table": args.table,
+            "field": args.field,
+            "bizdate": args.bizdate,
+            "partition_col": args.partition_col,
+            "limit": args.limit,
+        }
+    if args.command == "compare-tables":
+        return {
+            "action": "compare-tables",
+            "left_table": args.left_table,
+            "right_table": args.right_table,
+            "key": args.key,
+            "metric": args.metric,
+            "bizdate": args.bizdate,
+            "partition_col": args.partition_col,
+            "limit": args.limit,
+        }
     if args.command == "catalog":
         return {
             "action": "catalog",
@@ -140,11 +255,11 @@ def payload_from_args(args: argparse.Namespace) -> dict[str, Any]:
             "table": args.table,
             "limit": 20,
         }
-    if args.command == "table-logic":
+    if args.command in {"table-logic", "trace-table"}:
         return {
             "action": "table-logic",
             "table": args.table,
-            "limit": 20,
+            "limit": args.limit,
         }
     return {"action": "sql", "sql": args.sql, "limit": args.limit}
 
@@ -154,7 +269,9 @@ def main(argv: list[str] | None = None) -> int:
     payload = payload_from_args(args)
 
     try:
-        if args.command == "latest-partition":
+        if args.command == "health":
+            rows = check_health(state_path=args.state)
+        elif args.command == "latest-partition":
             try:
                 rows = post_query(payload, state_path=args.state)
             except RuntimeError as exc:
@@ -173,6 +290,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
+    if args.evidence_log:
+        append_evidence_log(args.evidence_log, payload=payload, rows=rows)
     print_rows(rows, json_output=args.json)
     return 0
 

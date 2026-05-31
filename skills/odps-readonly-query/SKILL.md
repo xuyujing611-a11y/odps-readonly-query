@@ -1,158 +1,125 @@
 ---
 name: odps-readonly-query
-description: Use when querying Alibaba Cloud MaxCompute or ODPS tables, checking table row counts, partitions, report model data quality, table SQL logic, DataWorks node code or schedule, system catalog metadata, or diagnosing report data issues through the bundled odps_report_doctor read-only gateway. Default mode uses a human-started local gateway unlocked from .env.enc; agents must not read secrets, decrypt config files, run direct PyODPS, use odpscmd, call DataWorks write APIs, or execute mutating SQL.
+description: Use when querying Alibaba Cloud MaxCompute or ODPS tables, doing quick row counts or samples, resolving partitions, checking report model data quality, tracing DataWorks table logic, comparing table outputs, or diagnosing ODPS data bugs through the bundled odps_report_doctor read-only gateway. Default mode uses a human-started local gateway unlocked from .env.enc; agents must not read secrets, decrypt config files, run direct PyODPS, use odpscmd, call DataWorks write APIs, execute mutating SQL, or speculate about unverified schemas.
 ---
 
 # ODPS Read-Only Query
 
-Use this skill for Alibaba Cloud MaxCompute / ODPS / DataWorks table queries through the local `odps_report_doctor` gateway.
+Use this skill to query Alibaba Cloud MaxCompute / ODPS through the local `odps_report_doctor` gateway.
 
 ## Operating Model
 
-Default to encrypted-config Mode B:
+Default to Mode B:
 
-1. A human operator places `.env.enc` in the tool project root.
-2. The human operator starts `python .\scripts\start_gateway.py` and enters the `.env.enc` password locally.
-3. The agent uses only `python .\scripts\gateway_query.py ...` while that gateway window stays open.
+1. A human puts `.env.enc` in the tool project root.
+2. A human starts `python .\scripts\start_gateway.py` and enters the password locally.
+3. The agent uses only `python .\scripts\gateway_query.py ...` while the gateway stays open.
 
-Do not open, read, decrypt, copy, upload, replace, or ask the user to paste `.env`, `.env.enc`, AK/SK, or passwords. If the gateway is unavailable, ask the human to start it; do not try to unlock the config yourself.
+Do not open, read, decrypt, copy, upload, replace, or ask the user to paste `.env`, `.env.enc`, AK/SK, or passwords. If the gateway is unavailable, ask the human to start it.
 
 ## Locate The Tool Project
 
-Before querying, locate the downloaded `odps_report_doctor` project root. Prefer this order:
+Before querying, locate the downloaded project root. Prefer:
 
-1. Use `$env:ODPS_REPORT_DOCTOR_ROOT` if it is set and contains `scripts\gateway_query.py` plus `report_doctor\`.
-2. Use the current working directory if it contains `scripts\gateway_query.py` plus `report_doctor\`.
-3. Search nearby workspace folders for `odps-readonly-query` or `odps_report_doctor`.
-4. If still not found, ask the user where they downloaded the project.
+1. `$env:ODPS_REPORT_DOCTOR_ROOT` if it contains `scripts\gateway_query.py` and `report_doctor\`.
+2. The current working directory if it contains those paths.
+3. Nearby folders named `odps-readonly-query` or `odps_report_doctor`.
+4. Ask the user for the path only if discovery fails.
 
-Run all commands from the project root. Do not assume the original author's local path.
+Run commands from the project root. Do not assume the original author's local path.
 
-## Required Setup Check
+## Task Router
 
-The project should already have dependencies installed with:
-
-```powershell
-python .\scripts\bootstrap_vendor.py
-```
-
-For normal agent work, do not run `safe_query.py test-connection`, because it may load encrypted config directly. Prefer checking whether the gateway is reachable by trying the requested `gateway_query.py` command.
+- Quick row count or latest partition: use `quick-count` first. See `references/query-recipes.md`.
+- Schema, partition keys, or confusing `SHOW PARTITIONS`: use `inspect-table` first. See `references/error-handling.md`.
+- Small data sample: use `sample`.
+- Field distribution or null-like checks: use `field-profile`.
+- Table logic, schedule, lineage, or upstream SQL: use `trace-table`.
+- ADS vs DWS or source-vs-target discrepancy: use `compare-tables`, then drill with targeted safe SQL. See `references/workflows.md`.
+- Long multi-step investigation: use `--evidence-log outputs\investigations\<case>\evidence.jsonl` and keep a concise evidence trail. See `references/workflows.md`.
+- Project-specific prefix defaults: see `references/project-context.md`.
 
 ## Hard Rules
 
-- Never ask the user to paste AK/SK, `.env`, `.env.enc`, or passwords into chat.
-- Never read or decrypt `.env.enc`; only the human-started gateway may load it.
 - Never run direct ad hoc PyODPS `execute_sql()` code.
-- Never run `odpscmd` for this workflow.
-- Never call DataWorks write/run/deploy APIs. Allowed DataWorks APIs are read-only metadata/code lookups performed by the gateway, such as `ListNodesByOutput`, `GetNode`, `GetNodeCode`, `SearchMetaTables`, and `GetMetaTableProducingTasks`.
-- Refuse or rewrite any user SQL involving `INSERT`, `DELETE`, `UPDATE`, `DROP`, `ALTER`, `CREATE`, `MERGE`, `TRUNCATE`, or `OVERWRITE`. DataWorks node code may contain those words as text; do not execute it.
-- Use `scripts\gateway_query.py` for interactive querying.
-- If `gateway_query.py` cannot connect, stop and ask the user to start the local gateway. Do not fall back to one-shot config loading unless the user explicitly overrides Mode B.
+- Never run `odpscmd`.
+- Never call DataWorks write/run/deploy APIs.
+- Refuse or rewrite SQL with `INSERT`, `DELETE`, `UPDATE`, `DROP`, `ALTER`, `CREATE`, `MERGE`, `TRUNCATE`, or `OVERWRITE`. DataWorks node code may contain those words as text; do not execute it.
+- Never invent field names, partition columns, upstream tables, or business dates. Verify with `inspect-table`, `catalog columns`, `trace-table`, or sample rows first.
+- Do not use `safe_query.py` in normal agent mode; it may load encrypted config directly. Use `gateway_query.py`.
+- If `gateway_query.py` cannot connect, stop and ask the human to start `start_gateway.py`.
 
 ## Gateway Not Running
 
-Respond with this workflow, using the actual project root path you found, then stop:
+Respond with this workflow, using the real project root path, then stop:
 
 ```text
-本地 ODPS 只读网关还没有启动。请在 PowerShell 里运行：
+The local ODPS read-only gateway is not running. Please run this in PowerShell:
 
-cd "<odps_report_doctor project root>"
+cd "<odps-readonly-query project root>"
 python .\scripts\start_gateway.py
 
-输入 .env.enc 密码后保持窗口打开，然后回复“继续”，我会接着刚才的查询。
+Enter the .env.enc password locally, keep that window open, then reply "continue".
 ```
 
-When the user replies `继续`, retry the original `gateway_query.py` command.
+When the user replies, retry the original `gateway_query.py` command.
+
+## Standard Commands
+
+Health:
+
+```powershell
+python .\scripts\gateway_query.py health
+```
+
+Inspect table:
+
+```powershell
+python .\scripts\gateway_query.py --json inspect-table <qualified_table>
+```
+
+Quick count:
+
+```powershell
+python .\scripts\gateway_query.py --json quick-count <qualified_table> --bizdate latest
+python .\scripts\gateway_query.py --json quick-count <qualified_table> --bizdate 20260527
+```
+
+Sample and profile:
+
+```powershell
+python .\scripts\gateway_query.py --json sample <qualified_table> --bizdate 20260527 --limit 20
+python .\scripts\gateway_query.py --json field-profile <qualified_table> <field> --bizdate 20260527
+```
+
+Trace and compare:
+
+```powershell
+python .\scripts\gateway_query.py --json trace-table <qualified_table>
+python .\scripts\gateway_query.py --json compare-tables <left_table> <right_table> --key <key_col> --metric <amount_col> --bizdate 20260527
+```
+
+Evidence log for long investigations:
+
+```powershell
+python .\scripts\gateway_query.py --evidence-log outputs\investigations\case_001\evidence.jsonl --json quick-count <qualified_table> --bizdate latest
+```
 
 ## Partition Ambiguity Rules
 
-- Do not infer a second partition column from `SHOW PARTITIONS` output shape. A row like `["pt=20250921", "pt=20250923"]` does not prove there is a `pt2` column.
-- Before explaining partition columns, run `python .\scripts\gateway_query.py --json catalog columns <qualified_table>` and identify rows where `is_partition_key` is true.
-- If the real partition key list contains only `pt`, query only `WHERE pt = '<value>'`; never invent `pt2`, `ds2`, or another partition column name.
-- If `latest-partition` returns `status: ambiguous`, report `candidates_by_token_index` and say the tool refuses to guess. Ask the human which token position is the business partition, or verify with catalog partitions and row counts.
-- After human confirmation, rerun with `--token-index <n>`, for example `python .\scripts\gateway_query.py latest-partition <qualified_table> --token-index 0`.
-## Table Name Normalization
+- A row like `["pt=20250921", "pt=20250923"]` does not prove there is a `pt2` column.
+- Use `inspect-table` or `catalog columns` to verify real partition keys.
+- If `latest-partition` or `quick-count --bizdate latest` returns `status: ambiguous`, report the ambiguity and do not continue as if a date was confirmed.
+- Use `--token-index <n>` only after metadata or a human confirms which token position is the business partition.
 
-- If the user provides a fully qualified table such as `yh_doc_cdm.some_table`, use that exact table first.
-- If the user provides only a table name and the user's workspace has known project prefixes, build likely candidates before trying anything else.
-- For the original `yh_doc_*` workspace, use:
-  - `ads_`, `rpt_`, report-style table -> `yh_doc_ads.<table>` first.
-  - `ods_` -> `yh_doc_ods.<table>` first.
-  - `dwd_`, `dws_`, `dim_`, `fact_` -> `yh_doc_cdm.<table>` first.
-  - otherwise try `yh_doc_cdm.<table>`, then `yh_doc_ads.<table>`, then `yh_doc_ods.<table>`.
-- Stop after the first qualified candidate returns a useful result.
-- If the user corrects a typo or provides a new exact table, abandon the old candidate and query the new exact table.
+## Output Contract
 
-## Standard Gateway Commands
+Always report:
 
-Show partitions:
-
-```powershell
-python .\scripts\gateway_query.py partitions <qualified_table>
-```
-
-Find latest partition:
-
-```powershell
-python .\scripts\gateway_query.py latest-partition <qualified_table>
-```
-
-For latest-partition results, use the returned `partition_value` as the `pt` value for the next command. Never infer the latest partition from the last visible row of `partitions`.
-
-Count one partition:
-
-```powershell
-python .\scripts\gateway_query.py count <qualified_table> --bizdate 20260527
-```
-
-Resolve table logic and schedule:
-
-```powershell
-python .\scripts\gateway_query.py --json table-logic <qualified_table>
-```
-
-Controlled catalog templates:
-
-```powershell
-python .\scripts\gateway_query.py --json catalog table <qualified_table>
-python .\scripts\gateway_query.py --json catalog columns <qualified_table>
-python .\scripts\gateway_query.py --json catalog partitions <qualified_table> --limit 500
-```
-
-Catalog commands are the only approved way to query `SYSTEM_CATALOG.INFORMATION_SCHEMA`. Do not send arbitrary `SYSTEM_CATALOG.INFORMATION_SCHEMA` SQL through the raw `sql` command.
-
-## Table Logic Workflow
-
-For "查某张表的调度信息和逻辑 SQL":
-
-1. Normalize the table using known project prefixes.
-2. Run `table-logic` on the best qualified candidate.
-3. Interpret the result:
-   - `status: ok`: report `node_id`, `node_name`, `project_env`, `matched_output`, `connection`, `cron_express`, `node_code_length`, and a concise SQL summary.
-   - `catalog_status: error` with `status: ok`: say catalog permission failed, but DataWorks read-only lookup succeeded.
-   - `status: not_found`: this means both DataWorks output-name lookup and metatable producing-task lookup did not match. Do not conclude the table or node does not exist; report `candidate_outputs`, then try the next production candidate if the user did not provide an exact prefix.
-4. `table-logic` automatically falls back from `ListNodesByOutput -> GetNode/GetNodeCode` to `SearchMetaTables -> GetMetaTableProducingTasks -> GetNode/GetNodeCode`.
-5. Do not paste very long `node_code` unless the user asks. Save it under `outputs\` when useful and report the path.
-
-## SQL Query Workflow
-
-- Prefer partition-scoped queries.
-- Treat `--bizdate 20260527` as `pt = '20260527'`.
-- For arbitrary safe SQL, use the gateway `sql` command only for `SELECT` / `WITH` queries that pass the local safety gate and, when appropriate, include a `pt` filter.
-
-Example:
-
-```powershell
-python .\scripts\gateway_query.py sql "SELECT COUNT(1) AS row_cnt FROM yh_doc_cdm.dim_matl WHERE pt = '20260527'"
-```
-
-## Reporting Format
-
-Include:
-
-- table name and qualified candidate used
 - command executed
-- partition, catalog method, or DataWorks lookup method
-- row count, partition, metadata, schedule, node code summary, or key result
-- confirmation that the query went through `gateway_query.py`
-- limitations, permission failures, gateway-not-running status, or failed candidates
+- verified result
+- evidence status: `verified`, `ambiguous`, `not_found`, `permission_error`, or `blocked`
+- limitations or failed candidates
+- next action only when useful
+
+Do not use nicknames, casual speculation, or "I think". Use "verified" only when a command result supports it.

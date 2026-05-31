@@ -6,7 +6,7 @@ from typing import Any
 
 from .dataworks_logic import resolve_table_logic
 from .safe_runner import build_count_sql, build_partitions_sql, run_safe_sql
-from .safe_runner import validate_table_name
+from .safe_runner import validate_bizdate, validate_table_name
 
 
 class GatewayError(ValueError):
@@ -19,6 +19,7 @@ _CATALOG_HINTS = {
     "odps.sql.allow.namespace.schema": "true",
 }
 _CATALOG_MAX_LIMIT = 5000
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def _validate_limit(value: object, *, default: int = 200) -> int:
@@ -28,6 +29,12 @@ def _validate_limit(value: object, *, default: int = 200) -> int:
     if limit < 1 or limit > _CATALOG_MAX_LIMIT:
         raise ValueError(f"limit must be between 1 and {_CATALOG_MAX_LIMIT}, got: {value}")
     return limit
+
+
+def _validate_identifier(value: str, *, label: str = "identifier") -> str:
+    if not _IDENTIFIER_RE.fullmatch(value):
+        raise ValueError(f"Unsafe {label}: {value}")
+    return value
 
 
 def _split_table_ref(table: str) -> tuple[str | None, str]:
@@ -109,6 +116,66 @@ def build_gateway_sql(payload: dict[str, Any]) -> str:
     if action == "latest-partition":
         table = str(payload.get("table", "")).strip()
         return build_partitions_sql(table)
+
+    if action == "quick-count":
+        table = str(payload.get("table", "")).strip()
+        bizdate = str(payload.get("bizdate", "latest")).strip().lower()
+        if bizdate == "latest":
+            return build_partitions_sql(table)
+        partition_col = str(payload.get("partition_col", "pt")).strip()
+        return build_count_sql(table, bizdate, partition_col=partition_col)
+
+    if action == "sample":
+        table = validate_table_name(str(payload.get("table", "")).strip())
+        bizdate = validate_bizdate(str(payload.get("bizdate", "")).strip())
+        partition_col = _validate_identifier(str(payload.get("partition_col", "pt")).strip(), label="partition column")
+        limit = _validate_limit(payload.get("limit"), default=20)
+        return f"SELECT * FROM {table} WHERE {partition_col} = '{bizdate}' LIMIT {limit}"
+
+    if action == "field-profile":
+        table = validate_table_name(str(payload.get("table", "")).strip())
+        field = _validate_identifier(str(payload.get("field", "")).strip(), label="field")
+        bizdate = validate_bizdate(str(payload.get("bizdate", "")).strip())
+        partition_col = _validate_identifier(str(payload.get("partition_col", "pt")).strip(), label="partition column")
+        limit = _validate_limit(payload.get("limit"), default=50)
+        return (
+            f"SELECT {field} AS value, COUNT(1) AS row_cnt "
+            f"FROM {table} WHERE {partition_col} = '{bizdate}' "
+            f"GROUP BY {field} ORDER BY row_cnt DESC LIMIT {limit}"
+        )
+
+    if action == "compare-tables":
+        left_table = validate_table_name(str(payload.get("left_table", "")).strip())
+        right_table = validate_table_name(str(payload.get("right_table", "")).strip())
+        key = _validate_identifier(str(payload.get("key", "")).strip(), label="key")
+        metric = _validate_identifier(str(payload.get("metric", "")).strip(), label="metric")
+        bizdate = validate_bizdate(str(payload.get("bizdate", "")).strip())
+        partition_col = _validate_identifier(str(payload.get("partition_col", "pt")).strip(), label="partition column")
+        limit = _validate_limit(payload.get("limit"), default=100)
+        return "\n".join(
+            [
+                "WITH left_side AS (",
+                f"  SELECT {key} AS join_key, COUNT(1) AS left_cnt, SUM({metric}) AS left_amount",
+                f"  FROM {left_table}",
+                f"  WHERE {partition_col} = '{bizdate}'",
+                f"  GROUP BY {key}",
+                "), right_side AS (",
+                f"  SELECT {key} AS join_key, COUNT(1) AS right_cnt, SUM({metric}) AS right_amount",
+                f"  FROM {right_table}",
+                f"  WHERE {partition_col} = '{bizdate}'",
+                f"  GROUP BY {key}",
+                ")",
+                "SELECT COALESCE(left_side.join_key, right_side.join_key) AS join_key,",
+                "       left_cnt, right_cnt, left_amount, right_amount,",
+                "       NVL(left_cnt, 0) - NVL(right_cnt, 0) AS cnt_diff,",
+                "       NVL(left_amount, 0) - NVL(right_amount, 0) AS amount_diff",
+                "FROM left_side",
+                "FULL OUTER JOIN right_side ON left_side.join_key = right_side.join_key",
+                "WHERE NVL(left_cnt, 0) <> NVL(right_cnt, 0)",
+                "   OR NVL(left_amount, 0) <> NVL(right_amount, 0)",
+                f"LIMIT {limit}",
+            ]
+        )
 
     if action == "catalog":
         template = str(payload.get("template", "")).strip()
@@ -242,6 +309,159 @@ def _parse_token_index(value: object) -> int | None:
     return token_index
 
 
+def _run_sql(
+    sql: str,
+    executor,
+    *,
+    audit_path: Path,
+    require_partition: bool,
+    limit: int | None,
+    hints: dict[str, str] | None = None,
+) -> list[dict[str, object]]:
+    return run_safe_sql(
+        sql,
+        executor,
+        audit_path=audit_path,
+        require_partition=require_partition,
+        limit=limit,
+        hints=hints,
+    )
+
+
+def _run_catalog_template(
+    template: str,
+    table: str,
+    executor,
+    *,
+    audit_path: Path,
+    limit: int,
+) -> dict[str, object]:
+    try:
+        rows = _run_sql(
+            build_catalog_sql(template, table, limit=limit),
+            executor,
+            audit_path=audit_path,
+            require_partition=False,
+            limit=limit,
+            hints=_CATALOG_HINTS,
+        )
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "rows": []}
+    return {"status": "ok", "rows": rows}
+
+
+def _truthy_catalog_value(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"true", "1", "yes", "y"}
+
+
+def _extract_partition_keys(column_rows: list[dict[str, object]]) -> list[str]:
+    keys: list[str] = []
+    for row in column_rows:
+        if _truthy_catalog_value(row.get("is_partition_key") or row.get("IS_PARTITION_KEY")):
+            name = row.get("column_name") or row.get("COLUMN_NAME")
+            if name is not None:
+                keys.append(str(name))
+    return keys
+
+
+def _handle_inspect_table(payload: dict[str, Any], executor, *, audit_path: Path) -> list[dict[str, object]]:
+    table = validate_table_name(str(payload.get("table", "")).strip())
+    catalog_limit = _validate_limit(payload.get("catalog_limit"), default=500)
+    partition_limit = _validate_limit(payload.get("partition_limit"), default=10000)
+    partition_col = str(payload.get("partition_col", "pt")).strip()
+    token_index = _parse_token_index(payload.get("token_index"))
+
+    table_result = _run_catalog_template("table", table, executor, audit_path=audit_path, limit=1)
+    columns_result = _run_catalog_template("columns", table, executor, audit_path=audit_path, limit=catalog_limit)
+    partitions_result = _run_catalog_template("partitions", table, executor, audit_path=audit_path, limit=catalog_limit)
+
+    try:
+        raw_partitions = _run_sql(
+            build_partitions_sql(table),
+            executor,
+            audit_path=audit_path,
+            require_partition=False,
+            limit=partition_limit,
+        )
+        latest_partition: dict[str, object] = extract_latest_partition(
+            raw_partitions,
+            partition_col=partition_col,
+            token_index=token_index,
+        )
+    except Exception as exc:
+        latest_partition = {"status": "error", "error": str(exc)}
+
+    statuses = [table_result["status"], columns_result["status"], partitions_result["status"]]
+    latest_status = latest_partition.get("status")
+    latest_ok = latest_status not in {"error"}
+    status = "ok" if latest_ok or any(item == "ok" for item in statuses) else "error"
+    return [
+        {
+            "status": status,
+            "table": table,
+            "catalog_table_status": table_result["status"],
+            "catalog_table_error": table_result.get("error"),
+            "catalog_table": table_result["rows"],
+            "catalog_columns_status": columns_result["status"],
+            "catalog_columns_error": columns_result.get("error"),
+            "partition_keys": _extract_partition_keys(columns_result["rows"]),
+            "columns": columns_result["rows"],
+            "catalog_partitions_status": partitions_result["status"],
+            "catalog_partitions_error": partitions_result.get("error"),
+            "catalog_partitions_sample": partitions_result["rows"],
+            "latest_partition": latest_partition,
+        }
+    ]
+
+
+def _handle_quick_count(payload: dict[str, Any], executor, *, audit_path: Path) -> list[dict[str, object]]:
+    table = validate_table_name(str(payload.get("table", "")).strip())
+    partition_col = str(payload.get("partition_col", "pt")).strip()
+    bizdate = str(payload.get("bizdate", "latest")).strip()
+    token_index = _parse_token_index(payload.get("token_index"))
+
+    latest_partition: dict[str, object] | None = None
+    if bizdate.lower() == "latest":
+        partition_rows = _run_sql(
+            build_partitions_sql(table),
+            executor,
+            audit_path=audit_path,
+            require_partition=False,
+            limit=10000,
+        )
+        latest_partition = extract_latest_partition(
+            partition_rows,
+            partition_col=partition_col,
+            token_index=token_index,
+        )
+        if latest_partition.get("status") == "ambiguous":
+            return [{"action": "quick-count", "table": table, **latest_partition}]
+        bizdate = str(latest_partition["partition_value"])
+
+    count_rows = _run_sql(
+        build_count_sql(table, bizdate, partition_col=partition_col),
+        executor,
+        audit_path=audit_path,
+        require_partition=True,
+        limit=1,
+    )
+    row_cnt = count_rows[0].get("row_cnt") if count_rows else None
+    return [
+        {
+            "status": "ok",
+            "action": "quick-count",
+            "table": table,
+            "partition_col": partition_col,
+            "partition_value": bizdate,
+            "partition": f"{partition_col}={bizdate}",
+            "row_cnt": row_cnt,
+            "latest_partition": latest_partition,
+        }
+    ]
+
+
 def handle_gateway_payload(
     payload: dict[str, Any],
     executor,
@@ -250,9 +470,14 @@ def handle_gateway_payload(
     dataworks_client=None,
     odps_project: str | None = None,
 ) -> list[dict[str, object]]:
+    action = str(payload.get("action", "")).strip().lower()
+    if action == "inspect-table":
+        return _handle_inspect_table(payload, executor, audit_path=audit_path)
+    if action == "quick-count":
+        return _handle_quick_count(payload, executor, audit_path=audit_path)
+
     sql = build_gateway_sql(payload)
     limit_value = payload.get("limit")
-    action = str(payload.get("action", "")).strip().lower()
     if action == "latest-partition":
         limit = int(limit_value) if limit_value is not None else 10000
     elif action == "table-logic":

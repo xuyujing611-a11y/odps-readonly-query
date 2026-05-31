@@ -100,6 +100,121 @@ class GatewayTests(unittest.TestCase):
 
         self.assertEqual(rows, [{"row_cnt": 123}])
 
+    def test_handle_payload_quick_count_uses_unambiguous_latest_partition(self):
+        calls = []
+
+        def executor(sql, limit, hints=None):
+            calls.append((sql, limit, hints))
+            if sql == "SHOW PARTITIONS yh_doc_cdm.dim_matl":
+                return [{"0": "pt=20260527"}]
+            if sql == "SELECT COUNT(1) AS row_cnt FROM yh_doc_cdm.dim_matl WHERE pt = '20260527'":
+                return [{"row_cnt": 279023}]
+            self.fail(f"unexpected SQL: {sql}")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = handle_gateway_payload(
+                {"action": "quick-count", "table": "yh_doc_cdm.dim_matl", "bizdate": "latest"},
+                executor,
+                audit_path=Path(tmp) / "audit.jsonl",
+            )
+
+        self.assertEqual(rows[0]["status"], "ok")
+        self.assertEqual(rows[0]["partition_value"], "20260527")
+        self.assertEqual(rows[0]["row_cnt"], 279023)
+        self.assertEqual(len(calls), 2)
+
+    def test_handle_payload_quick_count_stops_on_ambiguous_latest_partition(self):
+        calls = []
+
+        def executor(sql, limit, hints=None):
+            calls.append(sql)
+            return [
+                {"0": ["pt=20250921", "pt=20250922"]},
+                {"0": ["pt=20250921", "pt=20250923"]},
+            ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = handle_gateway_payload(
+                {"action": "quick-count", "table": "yh_doc_cdm.dim_matl", "bizdate": "latest"},
+                executor,
+                audit_path=Path(tmp) / "audit.jsonl",
+            )
+
+        self.assertEqual(rows[0]["status"], "ambiguous")
+        self.assertIn("candidates_by_token_index", rows[0])
+        self.assertEqual(calls, ["SHOW PARTITIONS yh_doc_cdm.dim_matl"])
+
+    def test_handle_payload_inspect_table_collects_metadata_and_latest_partition(self):
+        def executor(sql, limit, hints=None):
+            if "INFORMATION_SCHEMA.tables" in sql:
+                return [{"table_name": "dim_matl", "is_partitioned": True}]
+            if "INFORMATION_SCHEMA.columns" in sql:
+                return [
+                    {"column_name": "matl_cd", "is_partition_key": False},
+                    {"column_name": "pt", "is_partition_key": True},
+                ]
+            if "INFORMATION_SCHEMA.partitions" in sql:
+                return [{"partition_name": "pt=20260527"}]
+            if sql == "SHOW PARTITIONS yh_doc_cdm.dim_matl":
+                return [{"0": "pt=20260527"}]
+            self.fail(f"unexpected SQL: {sql}")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = handle_gateway_payload(
+                {"action": "inspect-table", "table": "yh_doc_cdm.dim_matl"},
+                executor,
+                audit_path=Path(tmp) / "audit.jsonl",
+            )
+
+        result = rows[0]
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["partition_keys"], ["pt"])
+        self.assertEqual(result["latest_partition"]["partition_value"], "20260527")
+        self.assertEqual(result["catalog_columns_status"], "ok")
+
+    def test_builds_sample_field_profile_and_compare_sql(self):
+        self.assertEqual(
+            build_gateway_sql(
+                {
+                    "action": "sample",
+                    "table": "yh_doc_cdm.dim_matl",
+                    "bizdate": "20260527",
+                    "limit": 10,
+                }
+            ),
+            "SELECT * FROM yh_doc_cdm.dim_matl WHERE pt = '20260527' LIMIT 10",
+        )
+        self.assertEqual(
+            build_gateway_sql(
+                {
+                    "action": "field-profile",
+                    "table": "yh_doc_cdm.dim_matl",
+                    "field": "matl_type_cd",
+                    "bizdate": "20260527",
+                    "limit": 20,
+                }
+            ),
+            (
+                "SELECT matl_type_cd AS value, COUNT(1) AS row_cnt "
+                "FROM yh_doc_cdm.dim_matl WHERE pt = '20260527' "
+                "GROUP BY matl_type_cd ORDER BY row_cnt DESC LIMIT 20"
+            ),
+        )
+        compare_sql = build_gateway_sql(
+            {
+                "action": "compare-tables",
+                "left_table": "yh_doc_ads.ads_a",
+                "right_table": "yh_doc_cdm.dws_a",
+                "key": "order_code",
+                "metric": "amount",
+                "bizdate": "20260527",
+                "limit": 50,
+            }
+        )
+        self.assertIn("FULL OUTER JOIN", compare_sql)
+        self.assertIn("left_amount", compare_sql)
+        self.assertIn("right_amount", compare_sql)
+
     def test_handle_payload_table_logic_uses_dataworks_when_catalog_has_no_view_sql(self):
         sql_calls = []
 

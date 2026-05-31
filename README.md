@@ -130,19 +130,28 @@ python .\scripts\gateway_query.py latest-partition <qualified_table> --token-ind
 After the gateway is running, the agent can query through the local gateway:
 
 ```powershell
-python .\scripts\gateway_query.py partitions yh_doc_cdm.dim_matl
-python .\scripts\gateway_query.py latest-partition yh_doc_cdm.dim_matl
-python .\scripts\gateway_query.py count yh_doc_cdm.dim_matl --bizdate 20260527
-python .\scripts\gateway_query.py --json table-logic yh_doc_cdm.dwd_order_shipment_split_mkt
+python .\scripts\gateway_query.py health
+python .\scripts\gateway_query.py --json inspect-table yh_doc_cdm.dim_matl
+python .\scripts\gateway_query.py --json quick-count yh_doc_cdm.dim_matl --bizdate latest
+python .\scripts\gateway_query.py --json quick-count yh_doc_cdm.dim_matl --bizdate 20260527
 ```
 
-Safe SQL through the gateway:
+Sampling, profiling, tracing, and comparison:
 
 ```powershell
-python .\scripts\gateway_query.py sql "SELECT COUNT(1) AS row_cnt FROM yh_doc_cdm.dim_matl WHERE pt = '20260527'"
+python .\scripts\gateway_query.py --json sample yh_doc_cdm.dim_matl --bizdate 20260527 --limit 20
+python .\scripts\gateway_query.py --json field-profile yh_doc_cdm.dim_matl matl_type_cd --bizdate 20260527
+python .\scripts\gateway_query.py --json trace-table yh_doc_cdm.dwd_order_shipment_split_mkt
+python .\scripts\gateway_query.py --json compare-tables yh_doc_ads.ads_a yh_doc_cdm.dws_a --key order_code --metric amount --bizdate 20260527
 ```
 
 If the gateway is not running, the agent should stop and ask the human operator to start `start_gateway.py`. It should not ask for the password or read `.env.enc`.
+
+For long investigations, append command evidence to a local JSONL file:
+
+```powershell
+python .\scripts\gateway_query.py --evidence-log outputs\investigations\case_001\evidence.jsonl --json quick-count yh_doc_cdm.dim_matl --bizdate latest
+```
 
 ## Install The Codex Skill
 

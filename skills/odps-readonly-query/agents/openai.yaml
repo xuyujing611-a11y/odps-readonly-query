@@ -1,6 +1,6 @@
 interface:
   display_name: "ODPS Read-Only Query"
-  short_description: "Query ODPS through a human-unlocked local encrypted gateway."
-  default_prompt: "Use $odps-readonly-query to inspect an ODPS table through the human-started .env.enc local gateway."
+  short_description: "Query, inspect, compare, and diagnose ODPS tables through a local encrypted gateway."
+  default_prompt: "Use $odps-readonly-query to inspect or diagnose an ODPS table through the human-started .env.enc local gateway."
 policy:
   allow_implicit_invocation: true
