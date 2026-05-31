@@ -18,6 +18,22 @@ Keep final answers grounded in that evidence:
 - `permission_error`: catalog or DataWorks read failed because of permissions.
 - `blocked`: gateway or required human input is missing.
 
+## Process Feedback Discipline
+
+For complex diagnosis, report progress step by step. Do not keep the user waiting until the final answer.
+
+After each meaningful command or SQL check, send a concise update in this shape:
+
+```text
+Step <n> - <purpose>:
+Command/SQL: <short command label or SQL purpose>
+Result: <key count, row, partition, upstream table, diff, or error>
+Status: verified | ambiguous | not_found | permission_error | blocked
+Next: <next check or stop reason>
+```
+
+Keep the update short enough to read during an investigation. Summarize large result sets and long DataWorks code; keep full details in the evidence log when needed.
+
 ## Depth Policy
 
 Match effort to the question.

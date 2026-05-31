@@ -54,6 +54,17 @@ Use the lightest workflow that can answer the user correctly.
 - Stop and mark the status as `ambiguous` or `blocked` if partition selection, schema discovery, permissions, or missing gateway state prevents verification.
 - Do not over-investigate simple查数 tasks after the requested number or sample is verified.
 
+## Step Feedback Rule
+
+For complex diagnosis, do not wait until the final answer to show the investigation. After each meaningful step or executed command, send a short progress update to the user with:
+
+- step number or label
+- command purpose or SQL purpose
+- key result and evidence status
+- next step or stop reason
+
+Keep updates concise. Do not paste huge raw rows, full DataWorks node code, secrets, `.env`, `.env.enc`, passwords, or AK/SK. For simple single-command lookups, one concise final answer is enough.
+
 ## Hard Rules
 
 - Never run direct ad hoc PyODPS `execute_sql()` code.
@@ -136,5 +147,7 @@ Always report:
 - evidence status: `verified`, `ambiguous`, `not_found`, `permission_error`, or `blocked`
 - limitations or failed candidates
 - next action only when useful
+
+For complex diagnosis, the final answer should summarize the step-by-step evidence already reported during the process; it must not be the first time the user sees the investigation results.
 
 Do not use nicknames, casual speculation, or "I think". Use "verified" only when a command result supports it.
