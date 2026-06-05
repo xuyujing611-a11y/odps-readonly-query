@@ -6,6 +6,7 @@ from report_doctor.gateway import (
     GatewayError,
     build_gateway_sql,
     extract_latest_partition,
+    extract_latest_partition_from_max_pt,
     handle_gateway_payload,
 )
 from report_doctor.sql_safety import SqlSafetyError
@@ -105,8 +106,8 @@ class GatewayTests(unittest.TestCase):
 
         def executor(sql, limit, hints=None):
             calls.append((sql, limit, hints))
-            if sql == "SHOW PARTITIONS yh_doc_cdm.dim_matl":
-                return [{"0": "pt=20260527"}]
+            if sql == "SELECT MAX_PT('yh_doc_cdm.dim_matl') AS partition_value":
+                return [{"partition_value": "20260527"}]
             if sql == "SELECT COUNT(1) AS row_cnt FROM yh_doc_cdm.dim_matl WHERE pt = '20260527'":
                 return [{"row_cnt": 279023}]
             self.fail(f"unexpected SQL: {sql}")
@@ -121,6 +122,7 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(rows[0]["status"], "ok")
         self.assertEqual(rows[0]["partition_value"], "20260527")
         self.assertEqual(rows[0]["row_cnt"], 279023)
+        self.assertEqual(rows[0]["latest_partition"]["method"], "max_pt")
         self.assertEqual(len(calls), 2)
 
     def test_handle_payload_quick_count_stops_on_ambiguous_latest_partition(self):
@@ -135,7 +137,12 @@ class GatewayTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             rows = handle_gateway_payload(
-                {"action": "quick-count", "table": "yh_doc_cdm.dim_matl", "bizdate": "latest"},
+                {
+                    "action": "quick-count",
+                    "table": "yh_doc_cdm.dim_matl",
+                    "bizdate": "latest",
+                    "method": "show-partitions",
+                },
                 executor,
                 audit_path=Path(tmp) / "audit.jsonl",
             )
@@ -155,8 +162,8 @@ class GatewayTests(unittest.TestCase):
                 ]
             if "INFORMATION_SCHEMA.partitions" in sql:
                 return [{"partition_name": "pt=20260527"}]
-            if sql == "SHOW PARTITIONS yh_doc_cdm.dim_matl":
-                return [{"0": "pt=20260527"}]
+            if sql == "SELECT MAX_PT('yh_doc_cdm.dim_matl') AS partition_value":
+                return [{"partition_value": "20260527"}]
             self.fail(f"unexpected SQL: {sql}")
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -314,6 +321,41 @@ class GatewayTests(unittest.TestCase):
             },
         )
 
+
+    def test_extract_latest_partition_from_max_pt_accepts_plain_or_named_values(self):
+        latest = extract_latest_partition_from_max_pt([{"partition_value": "pt=20260527"}])
+        self.assertEqual(latest["partition_value"], "20260527")
+        self.assertEqual(latest["method"], "max_pt")
+
+        latest = extract_latest_partition_from_max_pt([{"partition_value": "20260528"}])
+        self.assertEqual(latest["partition_value"], "20260528")
+
+    def test_quick_count_falls_back_to_show_partitions_when_max_pt_fails(self):
+        calls = []
+
+        def executor(sql, limit, hints=None):
+            calls.append(sql)
+            if sql == "SELECT MAX_PT('yh_doc_cdm.dim_matl') AS partition_value":
+                raise RuntimeError("MAX_PT unavailable")
+            if sql == "SHOW PARTITIONS yh_doc_cdm.dim_matl":
+                return [{"0": "pt=20260527"}]
+            if sql == "SELECT COUNT(1) AS row_cnt FROM yh_doc_cdm.dim_matl WHERE pt = '20260527'":
+                return [{"row_cnt": 123}]
+            self.fail(f"unexpected SQL: {sql}")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = handle_gateway_payload(
+                {"action": "quick-count", "table": "yh_doc_cdm.dim_matl", "bizdate": "latest"},
+                executor,
+                audit_path=Path(tmp) / "audit.jsonl",
+            )
+
+        self.assertEqual(rows[0]["row_cnt"], 123)
+        self.assertEqual(rows[0]["latest_partition"]["method"], "show_partitions")
+        self.assertEqual(rows[0]["latest_partition"]["fallback_from"], "max_pt")
+        self.assertEqual(calls[0], "SELECT MAX_PT('yh_doc_cdm.dim_matl') AS partition_value")
+        self.assertEqual(calls[1], "SHOW PARTITIONS yh_doc_cdm.dim_matl")
+
     def test_extract_latest_partition_reports_ambiguous_duplicate_partition_tokens(self):
         rows = [
             {"0": ["pt=20250921", "pt=20250922"]},
@@ -366,7 +408,12 @@ class GatewayTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             rows = handle_gateway_payload(
-                {"action": "latest-partition", "table": "yh_doc_cdm.dim_matl", "token_index": 1},
+                {
+                    "action": "latest-partition",
+                    "table": "yh_doc_cdm.dim_matl",
+                    "token_index": 1,
+                    "method": "show-partitions",
+                },
                 executor,
                 audit_path=Path(tmp) / "audit.jsonl",
             )
