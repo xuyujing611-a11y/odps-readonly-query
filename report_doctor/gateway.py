@@ -101,6 +101,11 @@ def build_catalog_sql(template: str, table: str, *, limit: int = 200) -> str:
     raise GatewayError(f"Unsupported catalog template: {template}")
 
 
+def build_max_pt_sql(table: str) -> str:
+    table = validate_table_name(table.strip())
+    return f"SELECT MAX_PT('{table}') AS partition_value"
+
+
 def build_gateway_sql(payload: dict[str, Any]) -> str:
     action = str(payload.get("action", "")).strip().lower()
     if action == "count":
@@ -115,13 +120,18 @@ def build_gateway_sql(payload: dict[str, Any]) -> str:
 
     if action == "latest-partition":
         table = str(payload.get("table", "")).strip()
-        return build_partitions_sql(table)
+        method = str(payload.get("method", "max-pt")).strip().lower()
+        if method == "show-partitions":
+            return build_partitions_sql(table)
+        if method != "max-pt":
+            raise GatewayError(f"Unsupported latest-partition method: {method}")
+        return build_max_pt_sql(table)
 
     if action == "quick-count":
         table = str(payload.get("table", "")).strip()
         bizdate = str(payload.get("bizdate", "latest")).strip().lower()
         if bizdate == "latest":
-            return build_partitions_sql(table)
+            return build_max_pt_sql(table)
         partition_col = str(payload.get("partition_col", "pt")).strip()
         return build_count_sql(table, bizdate, partition_col=partition_col)
 
@@ -236,6 +246,29 @@ def _latest_from_values(values: list[str], *, partition_col: str, partition_coun
         "partition": f"{partition_col}={latest_value}",
         "partition_count": partition_count,
     }
+
+
+def extract_latest_partition_from_max_pt(
+    rows: list[dict[str, object]],
+    *,
+    partition_col: str = "pt",
+) -> dict[str, object]:
+    values: list[str] = []
+    for row in rows:
+        for raw_value in row.values():
+            if raw_value is None:
+                continue
+            value = str(raw_value).strip()
+            token_match = _PARTITION_RE.fullmatch(value)
+            if token_match:
+                if token_match.group(1) == partition_col:
+                    values.append(token_match.group(2))
+                continue
+            if re.fullmatch(r"\d{8}", value):
+                values.append(value)
+    result = _latest_from_values(values, partition_col=partition_col, partition_count=len(rows))
+    result["method"] = "max_pt"
+    return result
 
 
 def _ambiguous_latest_partition(
@@ -378,17 +411,13 @@ def _handle_inspect_table(payload: dict[str, Any], executor, *, audit_path: Path
     partitions_result = _run_catalog_template("partitions", table, executor, audit_path=audit_path, limit=catalog_limit)
 
     try:
-        raw_partitions = _run_sql(
-            build_partitions_sql(table),
+        latest_partition = _resolve_latest_partition(
+            table,
             executor,
             audit_path=audit_path,
-            require_partition=False,
-            limit=partition_limit,
-        )
-        latest_partition: dict[str, object] = extract_latest_partition(
-            raw_partitions,
             partition_col=partition_col,
             token_index=token_index,
+            partition_limit=partition_limit,
         )
     except Exception as exc:
         latest_partition = {"status": "error", "error": str(exc)}
@@ -416,25 +445,69 @@ def _handle_inspect_table(payload: dict[str, Any], executor, *, audit_path: Path
     ]
 
 
+def _resolve_latest_partition(
+    table: str,
+    executor,
+    *,
+    audit_path: Path,
+    partition_col: str,
+    token_index: int | None = None,
+    partition_limit: int = 10000,
+    method: str = "max-pt",
+) -> dict[str, object]:
+    if method not in {"max-pt", "show-partitions"}:
+        raise GatewayError(f"Unsupported latest-partition method: {method}")
+
+    if method == "max-pt":
+        try:
+            rows = _run_sql(
+                build_max_pt_sql(table),
+                executor,
+                audit_path=audit_path,
+                require_partition=False,
+                limit=1,
+            )
+            return extract_latest_partition_from_max_pt(rows, partition_col=partition_col)
+        except Exception as max_pt_exc:
+            fallback_error = str(max_pt_exc)
+    else:
+        fallback_error = ""
+
+    partition_rows = _run_sql(
+        build_partitions_sql(table),
+        executor,
+        audit_path=audit_path,
+        require_partition=False,
+        limit=partition_limit,
+    )
+    latest = extract_latest_partition(
+        partition_rows,
+        partition_col=partition_col,
+        token_index=token_index,
+    )
+    latest["method"] = "show_partitions"
+    if fallback_error:
+        latest["fallback_from"] = "max_pt"
+        latest["fallback_error"] = fallback_error
+    return latest
+
+
 def _handle_quick_count(payload: dict[str, Any], executor, *, audit_path: Path) -> list[dict[str, object]]:
     table = validate_table_name(str(payload.get("table", "")).strip())
     partition_col = str(payload.get("partition_col", "pt")).strip()
     bizdate = str(payload.get("bizdate", "latest")).strip()
     token_index = _parse_token_index(payload.get("token_index"))
+    method = str(payload.get("method", "max-pt")).strip().lower()
 
     latest_partition: dict[str, object] | None = None
     if bizdate.lower() == "latest":
-        partition_rows = _run_sql(
-            build_partitions_sql(table),
+        latest_partition = _resolve_latest_partition(
+            table,
             executor,
             audit_path=audit_path,
-            require_partition=False,
-            limit=10000,
-        )
-        latest_partition = extract_latest_partition(
-            partition_rows,
             partition_col=partition_col,
             token_index=token_index,
+            method=method,
         )
         if latest_partition.get("status") == "ambiguous":
             return [{"action": "quick-count", "table": table, **latest_partition}]
@@ -503,7 +576,12 @@ def handle_gateway_payload(
     if action == "latest-partition":
         partition_col = str(payload.get("partition_col", "pt")).strip()
         token_index = _parse_token_index(payload.get("token_index"))
-        return [extract_latest_partition(rows, partition_col=partition_col, token_index=token_index)]
+        method = str(payload.get("method", "max-pt")).strip().lower()
+        if method == "show-partitions":
+            latest = extract_latest_partition(rows, partition_col=partition_col, token_index=token_index)
+            latest["method"] = "show_partitions"
+            return [latest]
+        return [extract_latest_partition_from_max_pt(rows, partition_col=partition_col)]
     if action == "table-logic":
         table = str(payload.get("table", "")).strip()
         return resolve_table_logic(
