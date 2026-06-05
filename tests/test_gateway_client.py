@@ -80,6 +80,7 @@ class GatewayClientTests(unittest.TestCase):
                 "partition_col": "pt",
                 "limit": 1,
                 "token_index": None,
+                "method": "max-pt",
             },
         )
 
