@@ -114,16 +114,24 @@ The gateway writes a local `gateway_state.json` containing a loopback URL and te
 
 ## Partition Ambiguity
 
+`latest-partition` and `quick-count --bizdate latest` default to:
+
+```sql
+SELECT MAX_PT('<qualified_table>') AS partition_value
+```
+
+This avoids manual parsing of multi-token `SHOW PARTITIONS` output. `SHOW PARTITIONS` remains available for explicit partition diagnostics and fallback only.
+
 `SHOW PARTITIONS` can return multiple `pt=YYYYMMDD` tokens in one displayed row. That does not mean there is a `pt2` column. Agents should verify real partition keys with:
 
 ```powershell
 python .\scripts\gateway_query.py --json catalog columns <qualified_table>
 ```
 
-If `latest-partition` returns `status: ambiguous`, it will include `candidates_by_token_index` instead of guessing. A human can choose a confirmed token position and rerun:
+If fallback `SHOW PARTITIONS` returns `status: ambiguous`, it will include `candidates_by_token_index` instead of guessing. A human can choose a confirmed token position and rerun:
 
 ```powershell
-python .\scripts\gateway_query.py latest-partition <qualified_table> --token-index 0
+python .\scripts\gateway_query.py latest-partition <qualified_table> --method show-partitions --token-index 0
 ```
 ## Agent Commands
 
