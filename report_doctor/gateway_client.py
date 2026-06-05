@@ -103,6 +103,7 @@ def build_parser() -> argparse.ArgumentParser:
     latest_partition = subparsers.add_parser("latest-partition", help="Return the latest yyyymmdd partition")
     latest_partition.add_argument("table")
     latest_partition.add_argument("--partition-col", default="pt")
+    latest_partition.add_argument("--method", choices=["max-pt", "show-partitions"], default="max-pt")
     latest_partition.add_argument("--limit", type=int, default=10000)
     latest_partition.add_argument(
         "--token-index",
@@ -121,6 +122,7 @@ def build_parser() -> argparse.ArgumentParser:
     quick_count.add_argument("table")
     quick_count.add_argument("--bizdate", default="latest")
     quick_count.add_argument("--partition-col", default="pt")
+    quick_count.add_argument("--method", choices=["max-pt", "show-partitions"], default="max-pt")
     quick_count.add_argument("--token-index", type=int)
 
     sample = subparsers.add_parser("sample", help="Sample rows from one table partition")
@@ -194,6 +196,7 @@ def payload_from_args(args: argparse.Namespace) -> dict[str, Any]:
             "partition_col": args.partition_col,
             "limit": args.limit,
             "token_index": args.token_index,
+            "method": args.method,
         }
     if args.command == "inspect-table":
         return {
@@ -212,6 +215,7 @@ def payload_from_args(args: argparse.Namespace) -> dict[str, Any]:
             "partition_col": args.partition_col,
             "limit": 1,
             "token_index": args.token_index,
+            "method": args.method,
         }
     if args.command == "sample":
         return {
