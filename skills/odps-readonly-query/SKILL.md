@@ -71,6 +71,18 @@ Use the lightest workflow that can answer the user correctly.
 - Stop and mark the status as `ambiguous` or `blocked` if partition selection, schema discovery, permissions, or missing gateway state prevents verification.
 - Do not over-investigate simple查数 tasks after the requested number or sample is verified.
 
+## Verification Closure Rules
+
+For data operations, report debugging, bug定位, business logic tracing, root-cause analysis, impact assessment, or fix recommendation:
+
+- Never use fake data, mock rows, fabricated examples, or guessed sample values as verification evidence.
+- Never close a conclusion through code reading, metadata reading, screenshots, or logical reasoning alone.
+- DataWorks node SQL, repository SQL, metadata, report screenshots, and business assumptions explain intent only; they do not prove production behavior.
+- Reproduce the actual production logic with read-only SQL against real tables for the exact entity, period, partition/date, account, material, order, organization, or business key supplied by the user.
+- When the production logic contains joins, `CASE` branches, rule tables, fallback conditions, exchange-rate conversion, allocation, reversal, or partition/date filtering, rebuild the relevant branch in a focused read-only SQL and output intermediate columns or grouped aggregates that prove which branch fired.
+- A root cause is verified only after the observed symptom, upstream source, transformation rule, and proposed fix effect are all checked with real query results.
+- If real data cannot be queried because of permission, missing schema, gateway failure, or unclear business keys, mark the result as `blocked` or `ambiguous`. Do not replace missing evidence with inference.
+
 ## Fragile Gateway Fallbacks
 
 The wrapper commands are conveniences, not proof that the data cannot be queried.
