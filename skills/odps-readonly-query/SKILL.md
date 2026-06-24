@@ -36,17 +36,36 @@ Fallback order when the canonical path is unavailable:
 
 Run commands from the project root. Do not start by probing the current workspace when the canonical D: path exists.
 
+## Local Gateway Proxy Rule
+
+The gateway listens on localhost. If shell proxy variables such as `http_proxy`, `https_proxy`, or `all_proxy` are set, localhost requests can return proxy `502` errors unless bypassed. The current gateway client disables proxies for its own localhost HTTP calls. If an older client is in use or health returns `HTTP Error 502: Bad Gateway`, retry with:
+
+```powershell
+$env:NO_PROXY='127.0.0.1,localhost'; $env:no_proxy='127.0.0.1,localhost'; python .\scripts\gateway_query.py health
+```
+
 ## Task Router
 
 - Quick row count or latest partition: use `quick-count --bizdate latest` or `latest-partition`; these default to `MAX_PT` and avoid parsing multi-token `SHOW PARTITIONS` rows. See `references/query-recipes.md`.
 - Schema, partition keys, or confusing `SHOW PARTITIONS`: use `inspect-table` first. See `references/error-handling.md`.
 - Small data sample: use `sample`.
 - Field distribution or null-like checks: use `field-profile`.
-- Table logic, schedule, lineage, or upstream SQL: use `trace-table`.
+- Table logic, schedule, lineage, or upstream SQL: use `trace-table --save-node-code outputs\node_code --compact-node-code`.
 - ADS vs DWS or source-vs-target discrepancy: use `compare-tables`, then drill with targeted safe SQL. See `references/workflows.md`.
+- User-facing report names or aliases, including income, management-report, assessment income/cost, outbound shipment, or gross-profit reports: read `references/report-index.yaml` first; then read the matched chain document.
 - Long multi-step investigation: use `--evidence-log outputs\investigations\<case>\evidence.jsonl` and keep a concise evidence trail. See `references/workflows.md`.
 - Project-specific prefix defaults: see `references/project-context.md`.
 
+
+## Report Knowledge Loop
+
+Use `references/report-index.yaml` as the first stop for user-facing report names, Chinese aliases, and recurring business phrases. If an alias matches, read only the linked `reference` document before tracing more lineage.
+
+After a complex diagnosis, update the knowledge base only for durable facts verified by `gateway_query.py` SQL, `inspect-table`, or `trace-table`. Add aliases, primary tables, lineage, and caveats to the existing report entry when possible. Create a new chain document only when the report family has a distinct perspective or repeated workflow.
+
+Do not record one-off order behavior, guesses, temporary SQL, dev-table observations, or unverified business assumptions as facts. If useful but uncertain, mark the report entry or document section as `tentative` or `寰呰ˉ鍏卄 and include the evidence command needed to verify it.
+
+Keep `SKILL.md` lean. Put routing metadata in `report-index.yaml`; put detailed lineage, table responsibilities, query templates, and known pitfalls in the linked reference document.
 ## Production Project Defaults
 
 For this workflow, business diagnosis defaults to production projects only. Do not rely on the gateway's default `*_dev` project and do not query `yh_doc_*_dev` unless the user explicitly asks for dev data.
@@ -62,18 +81,21 @@ Use the lightest workflow that can answer the user correctly.
 
 **Simple lookups** include row counts, latest partition checks, small samples, one-field profiles, and direct table metadata questions. For these, run the smallest safe command, answer the verified result, and do not start lineage or root-cause work unless the result is ambiguous or the user asks why.
 
-**Complex diagnosis** includes report differences, missing/incorrect values, data quality bugs,口径 questions, upstream logic checks, recurring production issues, and any request that asks for cause, impact, or fix direction. For these:
+**Complex diagnosis** includes report differences, missing/incorrect values, data quality bugs, metric-definition questions, upstream logic checks, recurring production issues, and any request that asks for cause, impact, or fix direction. For these:
 
 - Use an evidence log unless the investigation is only one or two commands.
 - Start from the exact table/key/date/entity the user gave, then trace toward ADS, DWS, DWD, ODS, source, or DataWorks logic as far as read-only access allows.
 - Every conclusion must be backed by an executed `gateway_query.py` command or SQL result. DataWorks node SQL alone explains intent; it is not proof that data matches that intent.
+- When the user names a Chinese field or report label, first verify candidate physical fields with `inspect-table` or `catalog columns`. Match by exact `column_comment` before using near-synonym columns; if several candidates exist, report them and choose the exact-comment field or ask for clarification.
+- For entity-level field bugs, first query a partition-level aggregate at the entity grain using `count(1)`, `count(distinct <business key>)`, `collect_set(<field>)`, and key min/max dates. Only fetch row samples after the aggregate proves which values are present.
 - Drill to the finest useful grain before calling the root cause verified: order, account, material, partner, source row, unmatched bucket, partition token, or exact filter/rule.
+- When upstream SQL uses rule CTEs or CASE logic, reproduce the relevant branch with a small read-only CTE for the exact entity. Output boolean columns for each candidate condition, especially `IN`/`NOT IN`, null fallback, date-window, and join-match predicates.
 - Stop and mark the status as `ambiguous` or `blocked` if partition selection, schema discovery, permissions, or missing gateway state prevents verification.
-- Do not over-investigate simple查数 tasks after the requested number or sample is verified.
+- Do not over-investigate simple lookup tasks after the requested number or sample is verified.
 
 ## Verification Closure Rules
 
-For data operations, report debugging, bug定位, business logic tracing, root-cause analysis, impact assessment, or fix recommendation:
+For data operations, report debugging, bug localization, business logic tracing, root-cause analysis, impact assessment, or fix recommendation:
 
 - Never use fake data, mock rows, fabricated examples, or guessed sample values as verification evidence.
 - Never close a conclusion through code reading, metadata reading, screenshots, or logical reasoning alone.
@@ -83,21 +105,35 @@ For data operations, report debugging, bug定位, business logic tracing, root-c
 - A root cause is verified only after the observed symptom, upstream source, transformation rule, and proposed fix effect are all checked with real query results.
 - If real data cannot be queried because of permission, missing schema, gateway failure, or unclear business keys, mark the result as `blocked` or `ambiguous`. Do not replace missing evidence with inference.
 
+## Production Model SQL Edit Gate
+
+Use this gate when the user asks to modify, output, or patch production DataWorks/ODPS model SQL, especially ADS/DWS/DWD node code.
+
+- Never use a local cached SQL file as the edit baseline. First fetch the PROD node with `trace-table <qualified_table> --save-node-code <temp_dir> --compact-node-code` and identify the returned `node_id`, `project_env`, and `node_code_path`.
+- Copy or otherwise reset the working SQL file from the freshly fetched PROD node code before applying changes. If the workspace has user edits that must be preserved, stop and report the conflict instead of merging by guesswork.
+- Apply only the requested semantic change. Do not reformat, reorder, normalize encoding, collapse comments, or "clean up" unrelated SQL.
+- Before claiming the SQL matches production, run an allowlist diff: remove only the expected new/changed lines for the request, then compare the remaining local SQL to the freshly fetched PROD node code. The comparison must show equal line counts and zero unexpected differences.
+- Read the final `INSERT`/`SELECT` column list after editing. Verify every union branch has the same field order and preserves production null handling such as `NVL(<metric>, 0) AS <metric>`, scale factors such as `/10000`, and existing aliases.
+- Compile-test the edited logic with read-only `sql` statements against production tables. Rebuild only the relevant CTE branches and output representative columns; never execute the production `INSERT`, `CREATE`, `DROP`, or `OVERWRITE`.
+- Delete temporary PROD node-code directories created for the comparison once verification is complete.
+- In the final answer, report the `trace-table` command result, allowlist diff result such as `unexpected_diff_count=0`, read-only SQL verification status, and any remaining deployment prerequisite such as a required table schema change.
+
 ## Fragile Gateway Fallbacks
 
 The wrapper commands are conveniences, not proof that the data cannot be queried.
 
-- If `inspect-table` fails because the gateway requests a limit above the current server maximum, fall back to `table-logic`, `partitions --limit 5000`, small `sample`, and targeted `sql`.
+- `inspect-table` defaults to a lightweight output: table metadata, columns, partition keys, and latest partition. Use `--include-partition-sample` only for explicit partition diagnostics; keep `--partition-limit` no higher than 5000. If an older client still fails because the gateway requests a limit above the current server maximum, retry with `--partition-limit 5000`; if it still fails, fall back to `table-logic`, `partitions --limit 5000`, small `sample`, and targeted `sql`.
 - If `SYSTEM_CATALOG.INFORMATION_SCHEMA` returns `odps:Select` permission errors, use DataWorks `table-logic` for field names and lineage, then prove the behavior with business-table SQL.
 - If an unqualified table is not found because the gateway defaulted to a `*_dev` project, do not continue in dev. Run `table-logic <table>` or use the production prefix defaults above, then retry with the qualified production table, for example `yh_doc_ads.<table>`.
 - If `--evidence-log` cannot create files because the current workspace is read-only or empty, continue without it, state the limitation, and keep concise step updates in the conversation.
+- Evidence logs summarize very long strings. When tracing DataWorks logic, always save full node SQL with `--save-node-code` and cite the returned `node_code_path`; do not rely on huge terminal output or a truncated evidence log for exact logic inspection.
 - Gateway or terminal encoding may render Chinese values as mojibake. Do not paste mojibake back into SQL as a filter. Prefer stable codes, numeric IDs, date tokens, or the exact Chinese literals supplied by the user. If a Chinese rule type must be constrained and the rendered value is unreliable, anchor by other verified fields or first discover a stable non-Chinese key.
 
 ## ADS Rule And Join Multiplication Checks
 
 When a report value is "several times larger" or repeated after ADS/DWD processing:
 
-- First reproduce the user-facing aggregate at the same partition, period/month, organization, salesperson, and adjustment-type口径. Do not compare full latest partitions to filtered screenshots.
+- First reproduce the user-facing aggregate at the same partition, period/month, organization, salesperson, and adjustment-type definition. Do not compare full latest partitions to filtered screenshots.
 - Compare target rows and amounts with the nearest upstream source at a stable grain. Use `count(1)`, `count(distinct <business key>)`, and `sum(<amount>)`; if the target row count and amount both multiply by the same factor, suspect one-to-many joins.
 - Find one duplicated business key and fetch several rows. If all business columns are identical except generated IDs such as `unique_id()`, it is a technical join duplication, not a business split.
 - Read the DataWorks node only to identify candidate joins, then test each candidate table by counting matches on the exact join key/date/entity from the duplicated sample.
@@ -152,7 +188,7 @@ python .\scripts\gateway_query.py health
 Inspect table:
 
 ```powershell
-python .\scripts\gateway_query.py --json inspect-table <qualified_table>
+python .\scripts\gateway_query.py --json inspect-table <qualified_table> --partition-limit 5000
 ```
 
 Quick count:
@@ -172,7 +208,7 @@ python .\scripts\gateway_query.py --json field-profile <qualified_table> <field>
 Trace and compare:
 
 ```powershell
-python .\scripts\gateway_query.py --json trace-table <qualified_table>
+python .\scripts\gateway_query.py --json trace-table <qualified_table> --save-node-code outputs\node_code --compact-node-code
 python .\scripts\gateway_query.py --json compare-tables <left_table> <right_table> --key <key_col> --metric <amount_col> --bizdate 20260527
 ```
 
@@ -180,6 +216,12 @@ Evidence log for long investigations:
 
 ```powershell
 python .\scripts\gateway_query.py --evidence-log outputs\investigations\case_001\evidence.jsonl --json quick-count <qualified_table> --bizdate latest
+```
+
+Controlled small SQL without a partition filter:
+
+```powershell
+python .\scripts\gateway_query.py --json sql --no-require-partition "SELECT 1 AS ok" --limit 1
 ```
 
 ## Partition Ambiguity Rules

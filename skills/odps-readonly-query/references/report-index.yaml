@@ -1,0 +1,77 @@
+version: 1
+updated_at: '2026-06-24'
+update_policy:
+  evidence_required: true
+  stable_fact_only: true
+  write_tentative_when_uncertain: true
+  do_not_record:
+    - single_order_exception_without_general_rule
+    - unverified_guess
+    - temporary_table_or_one_off_sql
+reports:
+  - id: income_management_assess_mkt
+    display_name: 收入成本考核明细/管报收入表
+    aliases:
+      - 收入表
+      - 考核收入表
+      - 收入成本考核明细
+      - 管报收入表
+      - 管报
+      - 考核报
+      - 双算
+      - 利润拆分
+      - voucher_t到收入表
+      - G00到收入表
+      - K01双算调整
+      - G02公司间
+    perspective: 财务凭证/管报/考核视角
+    primary_tables:
+      - yh_doc_ads.ads_fin_income_cost_detail_assess_mkt
+      - yh_doc_cdm.dws_fin_income_cost_detail_assess_mkt
+    core_lineage:
+      - Hologres voucher_t
+      - yh_doc_ods.ods_di_voucher_t_f
+      - yh_doc_cdm.dwd_fin_voucher_f_link
+      - yh_doc_cdm.dwd_fin_voucher_link
+      - yh_doc_cdm.dws_fin_income_cost_detail_assess_base_tmp
+      - yh_doc_cdm.dws_fin_income_cost_detail_assess
+      - yh_doc_cdm.dws_fin_income_cost_detail_profit_exclusion
+      - yh_doc_cdm.dws_fin_income_cost_detail_assess_mkt
+      - yh_doc_ads.ads_fin_income_cost_detail_assess_mkt
+    reference: references/income-management-report-chain.md
+    status: verified
+    evidence:
+      - type: trace-table
+        target: yh_doc_cdm.dwd_fin_voucher_link
+        note: dwd_fin_voucher_link selects dwd_fin_voucher_f_link where exclude_tag is null.
+      - type: trace-table
+        target: yh_doc_cdm.dws_fin_income_cost_detail_assess_base_tmp
+        note: assessment base computes remove_flag, biz_logic_flag, income_cost_flag and keeps remove_flag=1.
+      - type: case
+        target: sale_num=0202459193
+        note: verified original RV/G00 S income is removed before ADS by assessment base rules, while G02/K01 derived rows remain.
+
+  - id: order_shipment_split_mkt
+    display_name: 销售订单出库情况报表
+    aliases:
+      - 出库表
+      - 出库情况表
+      - 出库情况报表
+      - 销售订单出库情况报表
+      - 销售订单出库表
+      - 订单出库表
+      - 发货表
+      - 订单发货汇总
+      - 雨虹收入成本毛利出库表
+    perspective: 订单/发票/出库视角
+    primary_tables:
+      - yh_doc_cdm.dwd_order_shipment_split_mkt
+    related_tables:
+      - yh_doc_cdm.dwd_order_shipment_split_gggs
+    reference: references/order-shipment-chain.md
+    status: verified_partial
+    evidence:
+      - type: trace-table
+        target: yh_doc_cdm.dwd_order_shipment_split_mkt
+        date: '2026-06-24'
+        note: PROD node 210002682128, comment 工建订单发货汇总(材料销售/工程施工), order/shipment/invoice output table.
