@@ -63,9 +63,19 @@ Use `references/report-index.yaml` as the first stop for user-facing report name
 
 After a complex diagnosis, update the knowledge base only for durable facts verified by `gateway_query.py` SQL, `inspect-table`, or `trace-table`. Add aliases, primary tables, lineage, and caveats to the existing report entry when possible. Create a new chain document only when the report family has a distinct perspective or repeated workflow.
 
-Do not record one-off order behavior, guesses, temporary SQL, dev-table observations, or unverified business assumptions as facts. If useful but uncertain, mark the report entry or document section as `tentative` or `寰呰ˉ鍏卄 and include the evidence command needed to verify it.
+Do not record one-off order behavior, guesses, temporary SQL, dev-table observations, or unverified business assumptions as facts. If useful but uncertain, mark the report entry or document section as `tentative` or `needs-verification` and include the evidence command needed to verify it.
 
 Keep `SKILL.md` lean. Put routing metadata in `report-index.yaml`; put detailed lineage, table responsibilities, query templates, and known pitfalls in the linked reference document.
+## Knowledge Base Update Gate
+
+Before the final response for any complex diagnosis, report debugging, bug localization, root-cause analysis, impact assessment, or production model SQL recommendation:
+
+1. Decide whether the investigation produced durable, reusable facts verified by `gateway_query.py` SQL, `inspect-table`, or `trace-table`.
+2. If yes, update `references/report-index.yaml` and the matched reference document before the final response. Add a new chain document only when the report family has a distinct perspective or repeated workflow.
+3. If no, explicitly record `knowledge_base_update=skipped` and the reason, such as one-off case, unverified fact, missing permission, no reusable report chain, or no new durable fact beyond existing knowledge.
+4. Do not mark the task complete until this gate is satisfied.
+5. In the final response, include `knowledge_base_update=updated` with updated file path(s), or `knowledge_base_update=skipped` with the skip reason.
+
 ## Production Project Defaults
 
 For this workflow, business diagnosis defaults to production projects only. Do not rely on the gateway's default `*_dev` project and do not query `yh_doc_*_dev` unless the user explicitly asks for dev data.
@@ -241,6 +251,7 @@ Always report:
 - verified result
 - evidence status: `verified`, `ambiguous`, `not_found`, `permission_error`, or `blocked`
 - limitations or failed candidates
+- knowledge base update: `knowledge_base_update=updated` with file path(s), or `knowledge_base_update=skipped` with reason
 - next action only when useful
 
 For complex diagnosis, the final answer should summarize the step-by-step evidence already reported during the process; it must not be the first time the user sees the investigation results.

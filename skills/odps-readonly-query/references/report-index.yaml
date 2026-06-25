@@ -1,5 +1,5 @@
 version: 1
-updated_at: '2026-06-24'
+updated_at: '2026-06-25'
 update_policy:
   evidence_required: true
   stable_fact_only: true
@@ -75,3 +75,37 @@ reports:
         target: yh_doc_cdm.dwd_order_shipment_split_mkt
         date: '2026-06-24'
         note: PROD node 210002682128, comment 工建订单发货汇总(材料销售/工程施工), order/shipment/invoice output table.
+  - id: asset_statement_diff_summary_gcsg
+    display_name: 总单与资产差异汇总表（工程施工）
+    aliases:
+      - 总单与资产差异汇总表
+      - 对账单总单与资产汇总差异核对
+      - 总单与资产差异汇总表（工程施工）
+      - 资产差异汇总表工程施工
+      - 工程施工资产差异
+      - ads_asset_statement_diff_summary_gcsg
+    perspective: 对账单总单 vs 资产汇总核对（工程施工）
+    primary_tables:
+      - yh_doc_ads.ads_asset_statement_diff_summary_gcsg
+      - yh_doc_cdm.dws_asset_statement_diff_summary_gcsg
+    core_lineage:
+      - yh_doc_cdm.dwd_mks_account_statement_consolidation_gcsg
+      - yh_doc_cdm.dwd_mks_asset_detail_merge_for_account_statement
+      - yh_doc_ods.ods_mks_yh_asset_account_all_withdrawal_f
+      - yh_doc_cdm.dws_asset_statement_diff_summary_gcsg
+      - yh_doc_ads.ads_asset_statement_diff_summary_gcsg
+    reference: references/asset-statement-diff-gcsg-chain.md
+    status: verified_partial
+    evidence:
+      - type: trace-table
+        target: yh_doc_ads.ads_asset_statement_diff_summary_gcsg
+        date: '2026-06-25'
+        note: PROD ADS node 210002653565 reads yh_doc_cdm.dws_asset_statement_diff_summary_gcsg and filters diff_metric_type_name including 垫资.
+      - type: trace-table
+        target: yh_doc_cdm.dws_asset_statement_diff_summary_gcsg
+        date: '2026-06-25'
+        note: PROD DWS node 210002653528 builds asset_sum from dwd_mks_asset_detail_merge_for_account_statement and joins withdrawal_f for refund classification.
+      - type: inspect-table
+        target: yh_doc_ods.ods_mks_yh_asset_account_all_withdrawal_f
+        date: '2026-06-25'
+        note: Verified flow_type and whether_advance fields exist; whether_advance comment is 是否垫资款 and flow_type comment is 流程类型 1-改造后.
