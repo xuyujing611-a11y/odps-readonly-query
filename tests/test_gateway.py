@@ -4,6 +4,7 @@ from pathlib import Path
 
 from report_doctor.gateway import (
     GatewayError,
+    action_requires_partition,
     build_gateway_sql,
     extract_latest_partition,
     extract_latest_partition_from_max_pt,
@@ -42,6 +43,11 @@ class GatewayTests(unittest.TestCase):
         )
         self.assertIn("FROM SYSTEM_CATALOG.INFORMATION_SCHEMA.columns", columns_sql)
         self.assertIn("ORDER BY table_catalog, table_name, ordinal_position", columns_sql)
+
+    def test_sql_payload_can_disable_partition_requirement(self):
+        self.assertFalse(action_requires_partition({"action": "sql", "require_partition": False}))
+        self.assertTrue(action_requires_partition({"action": "sql", "require_partition": True}))
+        self.assertTrue(action_requires_partition({"action": "sql"}))
 
         partitions_sql = build_gateway_sql(
             {"action": "catalog", "template": "partitions", "table": "dim_matl", "limit": 500}
@@ -152,7 +158,10 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(calls, ["SHOW PARTITIONS yh_doc_cdm.dim_matl"])
 
     def test_handle_payload_inspect_table_collects_metadata_and_latest_partition(self):
+        sql_calls = []
+
         def executor(sql, limit, hints=None):
+            sql_calls.append(sql)
             if "INFORMATION_SCHEMA.tables" in sql:
                 return [{"table_name": "dim_matl", "is_partitioned": True}]
             if "INFORMATION_SCHEMA.columns" in sql:
@@ -161,7 +170,7 @@ class GatewayTests(unittest.TestCase):
                     {"column_name": "pt", "is_partition_key": True},
                 ]
             if "INFORMATION_SCHEMA.partitions" in sql:
-                return [{"partition_name": "pt=20260527"}]
+                self.fail("inspect-table should skip partition sample by default")
             if sql == "SELECT MAX_PT('yh_doc_cdm.dim_matl') AS partition_value":
                 return [{"partition_value": "20260527"}]
             self.fail(f"unexpected SQL: {sql}")
@@ -178,6 +187,34 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(result["partition_keys"], ["pt"])
         self.assertEqual(result["latest_partition"]["partition_value"], "20260527")
         self.assertEqual(result["catalog_columns_status"], "ok")
+        self.assertEqual(result["catalog_partitions_status"], "skipped")
+        self.assertFalse(any("INFORMATION_SCHEMA.partitions" in sql for sql in sql_calls))
+
+    def test_handle_payload_inspect_table_can_include_partition_sample(self):
+        def executor(sql, limit, hints=None):
+            if "INFORMATION_SCHEMA.tables" in sql:
+                return [{"table_name": "dim_matl", "is_partitioned": True}]
+            if "INFORMATION_SCHEMA.columns" in sql:
+                return [{"column_name": "pt", "is_partition_key": True}]
+            if "INFORMATION_SCHEMA.partitions" in sql:
+                return [{"partition_name": "pt=20260527"}]
+            if sql == "SELECT MAX_PT('yh_doc_cdm.dim_matl') AS partition_value":
+                return [{"partition_value": "20260527"}]
+            self.fail(f"unexpected SQL: {sql}")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = handle_gateway_payload(
+                {
+                    "action": "inspect-table",
+                    "table": "yh_doc_cdm.dim_matl",
+                    "include_partition_sample": True,
+                },
+                executor,
+                audit_path=Path(tmp) / "audit.jsonl",
+            )
+
+        self.assertEqual(rows[0]["catalog_partitions_status"], "ok")
+        self.assertEqual(rows[0]["catalog_partitions_sample"], [{"partition_name": "pt=20260527"}])
 
     def test_builds_sample_field_profile_and_compare_sql(self):
         self.assertEqual(
@@ -296,6 +333,328 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(rows[0]["node_id"], 123)
         self.assertEqual(rows[0]["catalog_status"], "error")
         self.assertIn("Authorization Failed", rows[0]["catalog_error"])
+
+    def test_table_logic_ranks_producer_and_can_select_exact_node(self):
+        class FakeDataWorks:
+            project_env = "PROD"
+
+            def find_nodes_by_outputs(self, outputs):
+                return [
+                    {
+                        "Output": "yh_doc_ads.ads_information_of_the_four_stop_project",
+                        "NodeList": [
+                            {"NodeId": 210001378722},
+                            {"NodeId": 210002417707},
+                        ],
+                    }
+                ]
+
+            def get_node(self, node_id):
+                if node_id == 210002417707:
+                    return {
+                        "NodeId": node_id,
+                        "NodeName": "ads_information_of_the_four_stop_project",
+                        "ProjectId": 121893,
+                        "FileType": 10,
+                        "Connection": "yh_doc_ads",
+                    }
+                return {
+                    "NodeId": node_id,
+                    "NodeName": "ads_information_of_the_four_stop_project",
+                    "ProjectId": 77681,
+                    "FileType": 1095,
+                    "Connection": "data_holo",
+                }
+
+            def get_node_code(self, node_id):
+                return f"select {node_id}"
+
+        def executor(sql, limit, hints=None):
+            return []
+
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = handle_gateway_payload(
+                {
+                    "action": "table-logic",
+                    "table": "yh_doc_ads.ads_information_of_the_four_stop_project",
+                    "limit": 20,
+                    "max_nodes": 20,
+                },
+                executor,
+                audit_path=Path(tmp) / "audit.jsonl",
+                dataworks_client=FakeDataWorks(),
+                odps_project="yh_doc_ads",
+            )
+            exact = handle_gateway_payload(
+                {
+                    "action": "table-logic",
+                    "table": "yh_doc_ads.ads_information_of_the_four_stop_project",
+                    "node_id": 210002417707,
+                    "require_single_node": True,
+                },
+                executor,
+                audit_path=Path(tmp) / "audit.jsonl",
+                dataworks_client=FakeDataWorks(),
+                odps_project="yh_doc_ads",
+            )
+
+        self.assertEqual([row["node_id"] for row in rows], [210002417707, 210001378722])
+        self.assertEqual(rows[0]["node_role"], "maxcompute_producer")
+        self.assertIsNone(rows[0]["selection_warning"])
+        self.assertEqual(rows[1]["node_role"], "hologres_sync")
+        self.assertIn("not the MaxCompute producer", rows[1]["selection_warning"])
+        self.assertEqual([row["node_id"] for row in exact], [210002417707])
+        self.assertEqual(exact[0]["candidate_count"], 1)
+
+    def test_table_logic_require_single_node_rejects_ambiguous_candidates(self):
+        class FakeDataWorks:
+            project_env = "PROD"
+
+            def find_nodes_by_outputs(self, outputs):
+                return [{"Output": "yh_doc_ads.target", "NodeList": [{"NodeId": 1}, {"NodeId": 2}]}]
+
+            def get_node(self, node_id):
+                return {"NodeId": node_id, "NodeName": "target", "ProjectId": node_id, "FileType": 10}
+
+            def get_node_code(self, node_id):
+                return f"select {node_id}"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(ValueError, "resolved to 2 candidates"):
+                handle_gateway_payload(
+                    {
+                        "action": "table-logic",
+                        "table": "yh_doc_ads.target",
+                        "require_single_node": True,
+                    },
+                    lambda sql, limit, hints=None: [],
+                    audit_path=Path(tmp) / "audit.jsonl",
+                    dataworks_client=FakeDataWorks(),
+                    odps_project="yh_doc_ads",
+                )
+
+    def test_table_logic_limit_is_applied_to_node_candidates(self):
+        class FakeDataWorks:
+            project_env = "PROD"
+
+            def find_nodes_by_outputs(self, outputs):
+                return [{"Output": "yh_doc_ads.target", "NodeList": [{"NodeId": 1}, {"NodeId": 2}]}]
+
+            def get_node(self, node_id):
+                return {"NodeId": node_id, "NodeName": "target", "ProjectId": node_id, "FileType": 10}
+
+            def get_node_code(self, node_id):
+                return f"select {node_id}"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = handle_gateway_payload(
+                {"action": "table-logic", "table": "yh_doc_ads.target", "limit": 1},
+                lambda sql, limit, hints=None: [],
+                audit_path=Path(tmp) / "audit.jsonl",
+                dataworks_client=FakeDataWorks(),
+                odps_project="yh_doc_ads",
+            )
+
+        self.assertEqual(len(rows), 1)
+
+    def test_handle_payload_read_only_schedule_actions_use_dataworks_only(self):
+        sql_calls = []
+
+        class FakeDataWorks:
+            project_env = "PROD"
+
+            def find_nodes_by_outputs(self, outputs):
+                return [
+                    {
+                        "Output": "yh_doc_cdm.dim_matl",
+                        "NodeList": [{"NodeId": 123, "NodeName": "load_dim_matl"}],
+                    }
+                ]
+
+            def search_meta_tables(self, keyword):
+                return []
+
+            def get_node(self, node_id):
+                return {
+                    "NodeId": node_id,
+                    "NodeName": "load_dim_matl",
+                    "ProjectId": 999,
+                    "OwnerId": "owner_a",
+                    "CronExpress": "00 30 04-07/4 * * ?",
+                }
+
+            def get_node_code(self, node_id):
+                return "insert overwrite table yh_doc_cdm.dim_matl select * from src;"
+
+            def get_node_parents(self, node_id):
+                return [{"NodeId": 122, "NodeName": "parent_node", "CronExpress": "00 30 04-07/4 * * ?"}]
+
+            def get_node_children(self, node_id):
+                return [{"NodeId": 124, "NodeName": "child_node"}]
+
+            def list_instances(self, **kwargs):
+                return [
+                    {
+                        "InstanceId": 88001,
+                        "NodeId": kwargs["node_id"],
+                        "Status": "SUCCESS",
+                        "Bizdate": 1780675200000,
+                        "CycTime": 1780777800000,
+                        "BeginRunningTime": 1780789451000,
+                        "FinishTime": 1780789467000,
+                    }
+                ]
+
+            def get_instance_log(self, instance_id):
+                return "\n".join(
+                    [
+                        "2026-06-07 07:38:07 INFO Current task status:RUNNING",
+                        "2026-06-07 07:38:08 INFO Full Command ..",
+                        "2026-06-07 07:38:08 INFO /opt/taobao/tbdpapp/odpswrapper/odpswrapper.py /tmp/task",
+                        "2026-06-07 07:38:08 INFO SKYNET_TASKID=88001:",
+                        "2026-06-07 07:38:09 INFO CREATE TABLE IF NOT EXISTS noisy_ddl",
+                        "2026-06-07 07:38:10 INFO job id: 20260607abc",
+                        "2026-06-07 07:38:11 INFO Current task status:SUCCESS",
+                    ]
+                )
+
+        def executor(sql, limit, hints=None):
+            sql_calls.append(sql)
+            return []
+
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_path = Path(tmp) / "audit.jsonl"
+            schedule = handle_gateway_payload(
+                {
+                    "action": "batch-schedule-info",
+                    "tables": ["yh_doc_cdm.dim_matl"],
+                    "verify_permissions": True,
+                },
+                executor,
+                audit_path=audit_path,
+                dataworks_client=FakeDataWorks(),
+                odps_project="yh_doc_cdm",
+            )
+            graph = handle_gateway_payload(
+                {
+                    "action": "schedule-graph",
+                    "table": "yh_doc_cdm.dim_matl",
+                    "direction": "both",
+                    "depth": 1,
+                    "verify_permissions": True,
+                },
+                executor,
+                audit_path=audit_path,
+                dataworks_client=FakeDataWorks(),
+                odps_project="yh_doc_cdm",
+            )
+            instances = handle_gateway_payload(
+                {
+                    "action": "recent-instances",
+                    "table": "yh_doc_cdm.dim_matl",
+                    "bizdate": "20260605",
+                    "verify_permissions": True,
+                },
+                executor,
+                audit_path=audit_path,
+                dataworks_client=FakeDataWorks(),
+                odps_project="yh_doc_cdm",
+            )
+            logs = handle_gateway_payload(
+                {"action": "instance-log-summary", "instance_id": 88001, "verify_permissions": True},
+                executor,
+                audit_path=audit_path,
+                dataworks_client=FakeDataWorks(),
+                odps_project="yh_doc_cdm",
+            )
+
+        self.assertEqual(sql_calls, [])
+        self.assertEqual(schedule[0]["permission_status"], "ok")
+        self.assertEqual(schedule[0]["cron_fire_times"], ["04:30"])
+        self.assertEqual(schedule[0]["cron_fire_count_per_day"], 1)
+        self.assertEqual(schedule[0]["latest_instances"][0]["InstanceId"], 88001)
+        self.assertEqual(schedule[0]["latest_instances"][0]["Bizdate_beijing"], "2026-06-06 00:00:00")
+        self.assertEqual(schedule[0]["latest_instances"][0]["CycTime_beijing"], "2026-06-07 04:30:00")
+        self.assertEqual(schedule[0]["latest_instances"][0]["FinishTime_beijing"], "2026-06-07 07:44:27")
+        self.assertEqual(schedule[0]["latest_instances"][0]["duration_seconds"], 16.0)
+        self.assertEqual(graph[0]["parents"][0]["NodeId"], 122)
+        self.assertEqual(graph[0]["parents"][0]["cron_fire_times"], ["04:30"])
+        self.assertEqual(graph[0]["children"][0]["NodeId"], 124)
+        self.assertEqual(instances[0]["permission_status"], "ok")
+        self.assertEqual(instances[0]["FinishTime_beijing"], "2026-06-07 07:44:27")
+        self.assertEqual(logs[0]["log_excerpt_policy"], "filtered_noise_removed")
+        self.assertIn("Current task status:RUNNING", logs[0]["log_excerpt"])
+        self.assertIn("job id: 20260607abc", logs[0]["log_excerpt"])
+        self.assertNotIn("odpswrapper.py", logs[0]["log_excerpt"])
+        self.assertNotIn("SKYNET_TASKID", logs[0]["log_excerpt"])
+        self.assertNotIn("CREATE TABLE", logs[0]["log_excerpt"])
+        self.assertEqual(logs[0]["odps_job_ids"], ["20260607abc"])
+        self.assertEqual(logs[0]["odps_instance_ids"], ["88001"])
+
+    def test_handle_payload_schedule_action_without_dataworks_reports_unverified_permission(self):
+        def executor(sql, limit, hints=None):
+            self.fail("schedule metadata action must not execute ODPS SQL without DataWorks")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = handle_gateway_payload(
+                {"action": "batch-schedule-info", "tables": ["yh_doc_cdm.dim_matl"], "verify_permissions": True},
+                executor,
+                audit_path=Path(tmp) / "audit.jsonl",
+                dataworks_client=None,
+                odps_project="yh_doc_cdm",
+            )
+
+        self.assertEqual(rows[0]["status"], "unavailable")
+        self.assertEqual(rows[0]["permission_status"], "unverified")
+
+    def test_handle_payload_batch_freshness_combines_read_only_partition_count_and_schedule(self):
+        sql_calls = []
+
+        class FakeDataWorks:
+            project_env = "PROD"
+
+            def find_nodes_by_outputs(self, outputs):
+                return [{"Output": "yh_doc_cdm.dim_matl", "NodeList": [{"NodeId": 123}]}]
+
+            def search_meta_tables(self, keyword):
+                return []
+
+            def get_node(self, node_id):
+                return {"NodeId": node_id, "ProjectId": 999, "NodeName": "load_dim_matl"}
+
+            def get_node_code(self, node_id):
+                return "select 1"
+
+            def list_instances(self, **kwargs):
+                return [{"InstanceId": 88001, "Status": "SUCCESS"}]
+
+        def executor(sql, limit, hints=None):
+            sql_calls.append(sql)
+            if sql == "SELECT MAX_PT('yh_doc_cdm.dim_matl') AS partition_value":
+                return [{"partition_value": "20260605"}]
+            if sql == "SELECT COUNT(1) AS row_cnt FROM yh_doc_cdm.dim_matl WHERE pt = '20260605'":
+                return [{"row_cnt": 99}]
+            self.fail(f"unexpected SQL: {sql}")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = handle_gateway_payload(
+                {
+                    "action": "batch-freshness-check",
+                    "tables": ["yh_doc_cdm.dim_matl"],
+                    "expected_bizdate": "20260605",
+                    "include_counts": True,
+                    "verify_permissions": True,
+                },
+                executor,
+                audit_path=Path(tmp) / "audit.jsonl",
+                dataworks_client=FakeDataWorks(),
+                odps_project="yh_doc_cdm",
+            )
+
+        self.assertEqual(rows[0]["status"], "fresh")
+        self.assertEqual(rows[0]["row_cnt"], 99)
+        self.assertEqual(rows[0]["schedule"]["permission_status"], "ok")
+        self.assertEqual(len(sql_calls), 2)
 
     def test_handle_payload_executes_catalog_with_namespace_hints(self):
         calls = []

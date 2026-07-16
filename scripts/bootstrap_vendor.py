@@ -13,6 +13,8 @@ PIP_CACHE = ROOT / "pip_cache"
 PIP_TMP = ROOT / "pip_tmp"
 PACKAGES = [
     "pyodps==0.12.6",
+    "pandas>=2.3,<3",
+    "pyarrow>=24,<25",
     "alibabacloud_dataworks_public20200518==8.0.4",
     "requests==2.34.2",
     "urllib3==2.7.0",
@@ -43,6 +45,7 @@ def main() -> int:
             str(VENDOR),
             "--cache-dir",
             str(PIP_CACHE),
+            "--upgrade",
             *PACKAGES,
         ],
         env=env,

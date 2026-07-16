@@ -72,6 +72,92 @@ def _normalize_int(value: Any) -> int | None:
         return None
 
 
+def _node_role(row: dict[str, Any]) -> str:
+    file_type = _normalize_int(row.get("file_type"))
+    connection = str(row.get("connection") or "").lower()
+    if file_type == 1095 or "holo" in connection:
+        return "hologres_sync"
+    if file_type == 10:
+        return "maxcompute_producer"
+    return "dataworks_node"
+
+
+def _candidate_rank(row: dict[str, Any], *, table: str) -> tuple[int, int, int]:
+    target_project, _ = _split_table(table)
+    matched_output = str(row.get("matched_output") or "")
+    connection = str(row.get("connection") or "")
+    exact_output = matched_output.lower() == table.lower()
+    exact_connection = bool(target_project) and connection.lower() == str(target_project).lower()
+    role = _node_role(row)
+    return (
+        0 if exact_output else 1,
+        0 if exact_connection else 1,
+        0 if role == "maxcompute_producer" else 1,
+    )
+
+
+def _select_node_rows(
+    rows: list[dict[str, Any]],
+    *,
+    table: str,
+    max_nodes: int,
+    node_id: int | None,
+    project_id: int | None,
+    connection: str | None,
+    file_type: int | None,
+    matched_output: str | None,
+    require_single_node: bool,
+) -> list[dict[str, Any]]:
+    # The same node can be returned for both qualified and unqualified output
+    # candidates. Keep the strongest match, then rank producer nodes first.
+    deduped: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        current_node_id = _normalize_int(row.get("node_id"))
+        if current_node_id is None:
+            continue
+        previous = deduped.get(current_node_id)
+        if previous is None or _candidate_rank(row, table=table) < _candidate_rank(previous, table=table):
+            deduped[current_node_id] = row
+
+    selected = list(deduped.values())
+    if node_id is not None:
+        selected = [row for row in selected if _normalize_int(row.get("node_id")) == node_id]
+    if project_id is not None:
+        selected = [row for row in selected if _normalize_int(row.get("project_id")) == project_id]
+    if connection is not None:
+        selected = [row for row in selected if str(row.get("connection") or "").lower() == connection.lower()]
+    if file_type is not None:
+        selected = [row for row in selected if _normalize_int(row.get("file_type")) == file_type]
+    if matched_output is not None:
+        selected = [row for row in selected if str(row.get("matched_output") or "").lower() == matched_output.lower()]
+
+    selected.sort(key=lambda row: (*_candidate_rank(row, table=table), _normalize_int(row.get("node_id")) or 0))
+    candidate_count = len(selected)
+    for rank, row in enumerate(selected, start=1):
+        role = _node_role(row)
+        row["candidate_rank"] = rank
+        row["candidate_count"] = candidate_count
+        row["target_match"] = (
+            "exact_qualified_output"
+            if str(row.get("matched_output") or "").lower() == table.lower()
+            else "unqualified_or_fallback_output"
+        )
+        row["node_role"] = role
+        row["selection_warning"] = (
+            "This node synchronizes the target; it is not the MaxCompute producer."
+            if role == "hologres_sync"
+            else None
+        )
+
+    if require_single_node and candidate_count != 1:
+        ids = [row.get("node_id") for row in selected]
+        raise ValueError(
+            f"Node selection for {table} resolved to {candidate_count} candidates {ids}; "
+            "add --node-id/--project-id/--connection/--file-type/--matched-output."
+        )
+    return selected[:max_nodes]
+
+
 def _meta_table_matches(row: dict[str, Any], *, project: str | None, table_name: str, project_env: str | None) -> bool:
     row_table = _first_value(row, "TableName", "table_name")
     if str(row_table or "").lower() != table_name.lower():
@@ -220,6 +306,12 @@ def resolve_table_logic(
     odps_project: str | None,
     max_nodes: int = 5,
     catalog_error: str | None = None,
+    node_id: int | None = None,
+    project_id: int | None = None,
+    connection: str | None = None,
+    file_type: int | None = None,
+    matched_output: str | None = None,
+    require_single_node: bool = False,
 ) -> list[dict[str, Any]]:
     table = validate_table_name(table)
     view_logic = _catalog_view_logic(table, catalog_rows)
@@ -243,20 +335,18 @@ def resolve_table_logic(
     rows: list[dict[str, Any]] = []
 
     for output, node in _iter_nodes(output_pairs):
-        if len(rows) >= max_nodes:
-            break
-        node_id = _first_value(node, "NodeId", "node_id")
-        if node_id is None:
+        candidate_node_id = _first_value(node, "NodeId", "node_id")
+        if candidate_node_id is None:
             continue
-        detail = dataworks_client.get_node(int(node_id))
-        code = dataworks_client.get_node_code(int(node_id))
+        detail = dataworks_client.get_node(int(candidate_node_id))
+        code = dataworks_client.get_node_code(int(candidate_node_id))
         rows.append(
             _row_from_dataworks_node(
                 table=table,
                 dataworks_client=dataworks_client,
                 detail=detail,
                 node=node,
-                node_id=int(node_id),
+                node_id=int(candidate_node_id),
                 code=code,
                 catalog_error=catalog_error,
                 lookup_method="nodes_by_output",
@@ -265,7 +355,21 @@ def resolve_table_logic(
         )
 
     if rows:
-        return rows
+        selected = _select_node_rows(
+            rows,
+            table=table,
+            max_nodes=max_nodes,
+            node_id=node_id,
+            project_id=project_id,
+            connection=connection,
+            file_type=file_type,
+            matched_output=matched_output,
+            require_single_node=require_single_node,
+        )
+        if selected:
+            return selected
+        if any(value is not None for value in (node_id, project_id, connection, file_type, matched_output)):
+            raise ValueError(f"No DataWorks node matched the requested filters for {table}.")
 
     rows = _resolve_from_producing_tasks(
         table,
@@ -275,7 +379,21 @@ def resolve_table_logic(
         catalog_error=catalog_error,
     )
     if rows:
-        return rows
+        selected = _select_node_rows(
+            rows,
+            table=table,
+            max_nodes=max_nodes,
+            node_id=node_id,
+            project_id=project_id,
+            connection=connection,
+            file_type=file_type,
+            matched_output=matched_output,
+            require_single_node=require_single_node,
+        )
+        if selected:
+            return selected
+        if any(value is not None for value in (node_id, project_id, connection, file_type, matched_output)):
+            raise ValueError(f"No DataWorks node matched the requested filters for {table}.")
 
     return [
         {

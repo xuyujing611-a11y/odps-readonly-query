@@ -42,6 +42,10 @@ class FakeSdk:
     def get_node_code(self, request):
         return {"Success": True, "Data": "insert overwrite table yh_doc_cdm.dim_matl select * from src;"}
 
+    def list_instances(self, request):
+        self.last_list_instances_request = request
+        return {"Success": True, "Data": {"Instances": [{"InstanceId": 88001}]}}
+
 
 class DataWorksTests(unittest.TestCase):
     def test_candidate_outputs_include_qualified_table_first(self):
@@ -102,6 +106,25 @@ class DataWorksTests(unittest.TestCase):
         self.assertEqual(rows[0]["project_env"], "PROD")
         self.assertEqual(rows[0]["node_id"], 123)
         self.assertIn("insert overwrite table yh_doc_cdm.dim_matl", rows[0]["node_code"])
+
+    def test_list_instances_formats_yyyymmdd_dates_for_dataworks(self):
+        settings = DataWorksSettings(
+            access_id="ak",
+            secret_access_key="sk",
+            region="cn-beijing",
+            project_env="PROD",
+            endpoint="dataworks.cn-beijing.aliyuncs.com",
+            api_version="2020-05-18",
+        )
+        sdk = FakeSdk()
+        client = DataWorksReadOnlyClient(settings=settings, sdk_client=sdk)
+
+        rows = client.list_instances(bizdate="20260605", begin_bizdate="20260601", end_bizdate="20260605")
+
+        self.assertEqual(rows[0]["InstanceId"], 88001)
+        self.assertEqual(sdk.last_list_instances_request.bizdate, "2026-06-05 00:00:00")
+        self.assertEqual(sdk.last_list_instances_request.begin_bizdate, "2026-06-01 00:00:00")
+        self.assertEqual(sdk.last_list_instances_request.end_bizdate, "2026-06-05 23:59:59")
 
     def test_resolve_table_logic_falls_back_to_producing_tasks(self):
         class ProducingTaskSdk(FakeSdk):

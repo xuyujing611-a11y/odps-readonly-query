@@ -15,10 +15,17 @@ from .gateway import extract_latest_partition
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 STATE_PATH = PROJECT_ROOT / "gateway_state.json"
+DEFAULT_NODE_CODE_DIR = PROJECT_ROOT / "outputs" / "node_code"
+LONG_EVIDENCE_VALUE_LIMIT = 2000
 
 
 def load_state(path: str | Path = STATE_PATH) -> dict[str, str]:
     return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def _urlopen_local(request: urllib.request.Request, *, timeout: int):
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    return opener.open(request, timeout=timeout)
 
 
 def post_query(payload: dict[str, Any], *, state_path: str | Path = STATE_PATH) -> list[dict[str, object]]:
@@ -34,7 +41,7 @@ def post_query(payload: dict[str, Any], *, state_path: str | Path = STATE_PATH) 
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=120) as response:
+        with _urlopen_local(request, timeout=120) as response:
             result = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         body_text = exc.read().decode("utf-8", errors="replace")
@@ -49,11 +56,25 @@ def check_health(*, state_path: str | Path = STATE_PATH) -> list[dict[str, objec
     try:
         state = load_state(state_path)
         request = urllib.request.Request(state["base_url"].rstrip("/") + "/health", method="GET")
-        with urllib.request.urlopen(request, timeout=10) as response:
+        with _urlopen_local(request, timeout=10) as response:
             result = json.loads(response.read().decode("utf-8"))
     except Exception as exc:
         return [{"status": "error", "message": str(exc)}]
     return [{"status": "ok" if result.get("ok") else "error", "response": result}]
+
+
+def _summarize_evidence_value(value: object) -> object:
+    if isinstance(value, str) and len(value) > LONG_EVIDENCE_VALUE_LIMIT:
+        return {
+            "summary": "truncated_long_string",
+            "length": len(value),
+            "preview": value[:LONG_EVIDENCE_VALUE_LIMIT],
+        }
+    if isinstance(value, list):
+        return [_summarize_evidence_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _summarize_evidence_value(item) for key, item in value.items()}
+    return value
 
 
 def append_evidence_log(path: str | Path, *, payload: dict[str, Any], rows: list[dict[str, object]]) -> None:
@@ -63,10 +84,48 @@ def append_evidence_log(path: str | Path, *, payload: dict[str, Any], rows: list
         "ts": datetime.now(timezone.utc).isoformat(),
         "payload": payload,
         "row_count": len(rows),
-        "rows": rows,
+        "rows": _summarize_evidence_value(rows),
     }
     with evidence_path.open("a", encoding="utf-8") as file:
         file.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+
+
+def _safe_filename(value: object, *, fallback: str) -> str:
+    text = str(value or fallback).strip() or fallback
+    safe = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "_" for ch in text)
+    return safe[:160] or fallback
+
+
+def save_node_code_rows(
+    rows: list[dict[str, object]],
+    *,
+    output_dir: str | Path,
+    compact: bool,
+) -> list[dict[str, object]]:
+    target_dir = Path(output_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    saved_rows: list[dict[str, object]] = []
+    for index, row in enumerate(rows, start=1):
+        if not isinstance(row, dict):
+            saved_rows.append(row)
+            continue
+        new_row = dict(row)
+        code = new_row.get("node_code")
+        if isinstance(code, str) and code:
+            table = _safe_filename(new_row.get("table"), fallback="table")
+            node = _safe_filename(new_row.get("node_name") or new_row.get("node_id"), fallback=f"node_{index}")
+            project_id = _safe_filename(new_row.get("project_id"), fallback="unknown")
+            node_id = _safe_filename(new_row.get("node_id"), fallback=f"unknown_{index}")
+            file_type = _safe_filename(new_row.get("file_type"), fallback="unknown")
+            path = target_dir / f"{table}__p{project_id}__n{node_id}__ft{file_type}__{node}.sql"
+            path.write_text(code, encoding="utf-8")
+            new_row["node_code_path"] = str(path)
+            new_row["node_code_length"] = len(code)
+            new_row.setdefault("node_code_preview", code[:1200])
+            if compact:
+                new_row.pop("node_code", None)
+        saved_rows.append(new_row)
+    return saved_rows
 
 
 def latest_partition_rows(
@@ -116,7 +175,8 @@ def build_parser() -> argparse.ArgumentParser:
     inspect_table.add_argument("--partition-col", default="pt")
     inspect_table.add_argument("--token-index", type=int)
     inspect_table.add_argument("--catalog-limit", type=int, default=500)
-    inspect_table.add_argument("--partition-limit", type=int, default=10000)
+    inspect_table.add_argument("--partition-limit", type=int, default=5000)
+    inspect_table.add_argument("--include-partition-sample", action="store_true")
 
     quick_count = subparsers.add_parser("quick-count", help="Count a table partition, optionally resolving latest first")
     quick_count.add_argument("table")
@@ -165,15 +225,36 @@ def build_parser() -> argparse.ArgumentParser:
     )
     table_logic.add_argument("table")
     table_logic.add_argument("--limit", type=int, default=20)
+    table_logic.add_argument("--save-node-code", nargs="?", const=str(DEFAULT_NODE_CODE_DIR))
+    table_logic.add_argument("--compact-node-code", action="store_true")
+    _add_node_selection_arguments(table_logic)
 
     trace_table = subparsers.add_parser("trace-table", help="Alias for table-logic; resolve lineage and DataWorks node SQL")
     trace_table.add_argument("table")
     trace_table.add_argument("--limit", type=int, default=20)
+    trace_table.add_argument("--save-node-code", nargs="?", const=str(DEFAULT_NODE_CODE_DIR))
+    trace_table.add_argument("--compact-node-code", action="store_true", default=True)
+    _add_node_selection_arguments(trace_table)
 
     sql = subparsers.add_parser("sql", help="Run a safe read-only SQL string")
     sql.add_argument("sql")
     sql.add_argument("--limit", type=int, default=200)
+    sql.add_argument("--no-require-partition", action="store_true", help="Allow SELECT/WITH without pt/ds/bizdate for controlled small queries")
     return parser
+
+
+def _add_node_selection_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--max-nodes", type=int, help="Maximum candidate nodes to return after filtering")
+    parser.add_argument("--node-id", type=int, help="Return only this DataWorks node id")
+    parser.add_argument("--project-id", type=int, help="Return only nodes from this DataWorks project id")
+    parser.add_argument("--connection", help="Return only nodes whose connection matches exactly")
+    parser.add_argument("--file-type", type=int, help="Return only nodes with this DataWorks file type")
+    parser.add_argument("--matched-output", help="Return only nodes matched through this exact output name")
+    parser.add_argument(
+        "--require-single-node",
+        action="store_true",
+        help="Fail unless node selection resolves to exactly one candidate",
+    )
 
 
 def payload_from_args(args: argparse.Namespace) -> dict[str, Any]:
@@ -206,6 +287,7 @@ def payload_from_args(args: argparse.Namespace) -> dict[str, Any]:
             "token_index": args.token_index,
             "catalog_limit": args.catalog_limit,
             "partition_limit": args.partition_limit,
+            "include_partition_sample": args.include_partition_sample,
         }
     if args.command == "quick-count":
         return {
@@ -264,8 +346,20 @@ def payload_from_args(args: argparse.Namespace) -> dict[str, Any]:
             "action": "table-logic",
             "table": args.table,
             "limit": args.limit,
+            "max_nodes": args.max_nodes if args.max_nodes is not None else args.limit,
+            "node_id": args.node_id,
+            "project_id": args.project_id,
+            "connection": args.connection,
+            "file_type": args.file_type,
+            "matched_output": args.matched_output,
+            "require_single_node": args.require_single_node,
         }
-    return {"action": "sql", "sql": args.sql, "limit": args.limit}
+    return {
+        "action": "sql",
+        "sql": args.sql,
+        "limit": args.limit,
+        "require_partition": not args.no_require_partition,
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -293,6 +387,13 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
+
+    if args.command in {"table-logic", "trace-table"} and getattr(args, "save_node_code", None):
+        rows = save_node_code_rows(
+            rows,
+            output_dir=args.save_node_code,
+            compact=bool(getattr(args, "compact_node_code", False)),
+        )
 
     if args.evidence_log:
         append_evidence_log(args.evidence_log, payload=payload, rows=rows)

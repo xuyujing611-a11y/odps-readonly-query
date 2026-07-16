@@ -49,3 +49,29 @@ If a query returns no rows:
 2. Verify partition date.
 3. Check whether the key exists in upstream tables.
 4. Report `not_found`, not a business conclusion.
+
+## Multiple DataWorks Nodes
+
+If `trace-table` returns multiple candidates:
+
+1. Do not assume equal node names mean equal logic.
+2. Check `node_role`, `node_id`, `project_id`, `connection`, `file_type`, and `matched_output`.
+3. Prefer an exact qualified-output match and the producer role appropriate for the target table. Treat `hologres_sync` as downstream synchronization unless the user is specifically investigating Hologres loading.
+4. Rerun with `--node-id <id> --require-single-node`; optionally add `--project-id`, `--connection`, `--file-type`, or `--matched-output`.
+5. If selection still resolves to zero or multiple candidates, report `ambiguous`. Do not switch to a similarly named `_da`, dev, legacy, or unqualified table.
+
+Example:
+
+```powershell
+python .\scripts\gateway_query.py --json trace-table yh_doc_ads.example `
+  --node-id 210000000000 `
+  --project-id 121893 `
+  --connection yh_doc_ads `
+  --require-single-node `
+  --save-node-code outputs\node_code `
+  --compact-node-code
+```
+
+## Legacy Namespace Warning
+
+References to `dfyh_*`, `_da`, or another legacy namespace inside a verified current producer may be legitimate upstream dependencies. They are a warning to inspect, not automatic proof of a wrong node. However, never use a legacy node as a substitute merely because the current node code was not saved or is unavailable.

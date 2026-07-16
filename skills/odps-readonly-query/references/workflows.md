@@ -99,11 +99,29 @@ Then inspect the largest `amount_diff` or `cnt_diff` rows with targeted SQL.
 
 ## Table Logic And Schedule
 
-Use:
+First discover candidates:
 
 ```powershell
 python .\scripts\gateway_query.py --json trace-table <qualified_table>
 ```
+
+If more than one candidate is returned, compare `candidate_rank`, `node_role`, `node_id`, `project_id`, `connection`, `file_type`, and `matched_output`. A `hologres_sync` node is a downstream synchronization node, not the MaxCompute producer.
+
+Then select the intended producer explicitly before reading or saving full SQL:
+
+```powershell
+python .\scripts\gateway_query.py --json trace-table <qualified_table> `
+  --node-id <node_id> `
+  --require-single-node `
+  --save-node-code outputs\node_code `
+  --compact-node-code
+```
+
+Optional filters are `--project-id`, `--connection`, `--file-type`, and `--matched-output`. Use `--max-nodes` to control candidate count; `--limit` remains compatible and also limits candidates when `--max-nodes` is omitted.
+
+Never replace an unresolved target with a similarly named table, an `_da` variant, or a node from another project. If no candidate can be proven to produce the requested qualified table, report `ambiguous` or `not_found`.
+
+Saved SQL filenames contain project id, node id, and file type. Do not rename them in a way that removes node identity while multiple candidates are in scope.
 
 If catalog fails but DataWorks succeeds, report both facts: catalog permission failed, DataWorks read-only lookup succeeded.
 

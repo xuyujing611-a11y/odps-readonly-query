@@ -24,6 +24,10 @@ def make_odps(settings: OdpsSettings):
     )
 
 
+def _is_key_value_pair(value: object) -> bool:
+    return isinstance(value, tuple) and len(value) == 2 and isinstance(value[0], str)
+
+
 def rows_to_dicts(reader: Iterable) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for row in reader:
@@ -32,7 +36,11 @@ def rows_to_dicts(reader: Iterable) -> list[dict[str, object]]:
         elif hasattr(row, "asdict"):
             rows.append(row.asdict())
         else:
-            rows.append({str(index): value for index, value in enumerate(row)})
+            values = list(row)
+            if values and all(_is_key_value_pair(value) for value in values):
+                rows.append({key: value for key, value in values})
+            else:
+                rows.append({str(index): value for index, value in enumerate(values)})
     return rows
 
 

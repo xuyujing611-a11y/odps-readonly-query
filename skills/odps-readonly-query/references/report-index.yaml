@@ -1,0 +1,289 @@
+version: 1
+updated_at: '2026-07-02'
+update_policy:
+  evidence_required: true
+  stable_fact_only: true
+  write_tentative_when_uncertain: true
+  do_not_record:
+    - single_order_exception_without_general_rule
+    - unverified_guess
+    - temporary_table_or_one_off_sql
+reports:
+  - id: four_stop_project_information
+    display_name: 四停项目信息表
+    aliases:
+      - 四停项目
+      - 四停项目信息表
+      - 到期应收四停
+      - 未四停项目
+      - ads_information_of_the_four_stop_project
+    perspective: 到期应收、集采宽限、票据抵扣与风控手工四停综合判定
+    primary_tables:
+      - yh_doc_ads.ads_information_of_the_four_stop_project
+      - yh_doc_ads.ads_fk_siting_new
+    core_lineage:
+      - yh_doc_ads.ads_fm_accounts_receivable_policy_final
+      - yh_doc_cdm.dwi_menhu_uf_jcstgl
+      - yh_doc_cdm.dim_sbxm
+      - yh_doc_cdm.dim_yjfx_split
+      - yh_doc_cdm.dwi_mks_v_yh_no_receivable_amount
+      - yh_doc_ads.ads_fk_siting_new
+      - yh_doc_ads.ads_information_of_the_four_stop_project
+    reference: references/four-stop-project-chain.zh.md
+    status: verified_partial
+    evidence:
+      - type: trace-table
+        target: yh_doc_ads.ads_information_of_the_four_stop_project
+        date: '2026-07-16'
+        note: PROD node 210002417707 reads ${space_name_ads}.ads_fk_siting_new, which resolves to yh_doc_ads.ads_fk_siting_new in production; ADS preserves upstream receivable siting status except RM09 or manual-risk overrides.
+      - type: trace-table
+        target: yh_doc_ads.ads_fk_siting_new
+        date: '2026-07-16'
+        note: PROD node 210002286563 uses separate branches for collective-purchase, double-package, transfer-risk, and other receivables; collective-purchase subtracts aging month 1 and 2, while organization 50091518 in the other branch subtracts unoffset notes receivable.
+      - type: case
+        target: wbs=X-YH38260002, customer=60519411, pt=20260715
+        date: '2026-07-16'
+        note: Verified ar_due_amount=47226.50 and no_receivable_amount=138356.26 in the new-lakehouse production chain. The siting net amount is -91129.76, so the project remains not stopped. The collective-purchase list has no matching row.
+  - id: fin_profit_loss_year_vs_income_cost_assess_fty
+    display_name: 损益年累计表 vs 工厂考核收入明细表
+    aliases:
+      - ads_fin_profit_loss_year
+      - ads_fin_income_cost_detail_assess_fty
+      - profit loss year
+      - factory assessment income detail
+      - supply chain profit loss main business income
+    perspective: 损益表层级口径与工厂考核收入明细表对账
+    primary_tables:
+      - yh_doc_ads.ads_fin_profit_loss_year
+      - yh_doc_ads.ads_fin_income_cost_detail_assess_fty
+    core_lineage:
+      - yh_doc_ads.ads_fin_profit_loss_year
+      - yh_doc_cdm.dws_fin_profit_loss_year
+      - yh_doc_cdm.dws_fin_profit_loss_month
+      - yh_doc_cdm.dws_fin_profit_loss_month_mid
+      - yh_doc_cdm.dws_fin_account_balance_single_org_restore
+      - yh_doc_cdm.dws_fin_fee_balance_single_org
+      - yh_doc_ads.ads_fin_income_cost_detail_assess_fty
+      - yh_doc_cdm.dws_fin_income_cost_detail_assess
+    reference: references/fin-profit-loss-vs-assess-fty-chain.zh.md
+    status: verified_partial
+    evidence:
+      - type: case
+        target: org/company 50018478, pt=20260702, acctnt_year=2026
+        date: '2026-07-03'
+        note: 已验证 ads_fin_profit_loss_year 在 org_cd=50018478 下每期有两行：一行是 comp_cd=50018478 的公司行，另一行是 comp_cd 为空的上卷行；只按 org_cd 汇总会导致金额翻倍。
+      - type: case
+        target: comp_cd 50018478, pt=20260702, acctnt_year=2026
+        date: '2026-07-03'
+        note: 当“行政组织”指 comp_cd 时，两张表都应按 comp_cd 比较。已验证 FTY 7期累计为 393,170,837.87，损益表公司层级 7期累计为 407,079,797.57，真实差异为 13,908,959.70，原因是来源模型和指标口径不同。
+      - type: case
+        target: align fty income to profit-loss, pt=20260702, acctnt_year=2026, periods 1-7
+        date: '2026-07-03'
+        note: 已修正并验证的方法：使用 dws_fin_income_cost_detail_assess_base_tmp 作为共同凭证明细层，关联 dim_fin_profit_loss_report_item_rela 取得供应链主营业务收入规则，套用损益表考核过滤，并使用 -assess_vouch_amt * calc_sign 作为 FTY 考核收入。已验证 comp_cd=50018478 及制造集团全公司与损益表月发生额 max_abs_diff=0。
+      - type: trace-table
+        target: yh_doc_ads.ads_fin_income_cost_detail_assess_fty
+        date: '2026-07-03'
+        note: ADS FTY 读取 dws_fin_income_cost_detail_assess，并过滤 manage_fty='F'、grp_cd='20000007'，同时剔除指定科目。
+      - type: trace-table
+        target: yh_doc_ads.ads_fin_profit_loss_year
+        date: '2026-07-03'
+        note: ADS 损益年累计表读取 dws_fin_profit_loss_year；该表基于 dws_fin_profit_loss_month 做窗口累计，月度数据来自损益月中间表和会计余额来源，不是来自 FTY ADS 明细表。
+  - id: cbkh_cost_reduction_production_material_cost
+    display_name: cost reduction rate - production material cost
+    aliases:
+      - ads_cbkh_cost_reduction_rate_production_material_cost
+      - cost reduction production material cost
+      - cbkh production material cost
+      - production material cost reduction
+    perspective: production cost reduction / material consumption
+    primary_tables:
+      - yh_doc_ads.ads_cbkh_cost_reduction_rate_production_material_cost
+    core_lineage:
+      - yh_doc_cdm.dws_fm_factory_expense_details
+      - yh_doc_cdm.dim_factory_migration
+      - yh_doc_cdm.dim_benchmarking_factory_splite
+      - yh_doc_ads.ads_cbkh_cost_reduction_rate_production_material_cost
+    reference: references/cbkh-cost-reduction-production-material-cost-chain.md
+    status: verified_partial
+    evidence:
+      - type: trace-table
+        target: yh_doc_ads.ads_cbkh_cost_reduction_rate_production_material_cost
+        date: '2026-07-02'
+        note: PROD node 210002298495 builds bq from normal cl/ylhy plus an OEM branch. The OEM branch maps sand-powder factory consumption through dim_factory_migration.factory_cd -> company_cd, then joins to company output.
+      - type: case
+        target: product_cd=YH-B100-20, month=202605, pt=20260701
+        date: '2026-07-02'
+        note: Verified SFXY maps to company_cd YH53. The ADS YH53 rows combine YH53 product yield 79 with SFXY consumption rows such as consumables_cd 10105005-025 qty 1229.62 cost 271.33.
+  - id: income_management_assess_mkt
+    display_name: 收入成本考核明细/管报收入表
+    aliases:
+      - 收入表
+      - 考核收入表
+      - 收入成本考核明细
+      - 管报收入表
+      - 管报
+      - 考核报
+      - 双算
+      - 利润拆分
+      - voucher_t到收入表
+      - G00到收入表
+      - K01双算调整
+      - G02公司间
+    perspective: 财务凭证/管报/考核视角
+    primary_tables:
+      - yh_doc_ads.ads_fin_income_cost_detail_assess_mkt
+      - yh_doc_cdm.dws_fin_income_cost_detail_assess_mkt
+    core_lineage:
+      - Hologres voucher_t
+      - yh_doc_ods.ods_di_voucher_t_f
+      - yh_doc_cdm.dwd_fin_voucher_f_link
+      - yh_doc_cdm.dwd_fin_voucher_link
+      - yh_doc_cdm.dws_fin_income_cost_detail_assess_base_tmp
+      - yh_doc_cdm.dws_fin_income_cost_detail_assess
+      - yh_doc_cdm.dws_fin_income_cost_detail_profit_exclusion
+      - yh_doc_cdm.dws_fin_income_cost_detail_assess_mkt
+      - yh_doc_ads.ads_fin_income_cost_detail_assess_mkt
+    reference: references/income-management-report-chain.md
+    status: verified
+    evidence:
+      - type: trace-table
+        target: yh_doc_cdm.dwd_fin_voucher_link
+        note: dwd_fin_voucher_link selects dwd_fin_voucher_f_link where exclude_tag is null.
+      - type: trace-table
+        target: yh_doc_cdm.dws_fin_income_cost_detail_assess_base_tmp
+        note: assessment base computes remove_flag, biz_logic_flag, income_cost_flag and keeps remove_flag=1.
+      - type: case
+        target: sale_num=0202459193
+        note: verified original RV/G00 S income is removed before ADS by assessment base rules, while G02/K01 derived rows remain.
+
+  - id: non_share_revenue_cost_detail
+    display_name: 股改公司收入成本明细/施工实时口径
+    aliases:
+      - 股改公司收入成本表
+      - 股改公司收入成本明细
+      - ads_non_share_revenue_cost_detail
+      - dws_non_share_revenue_cost_detail
+      - 施工项目实时收入
+      - 年度累计签证收入
+    perspective: SAP收入成本明细 + 施工项目当前月实时测算口径
+    primary_tables:
+      - yh_doc_ads.ads_non_share_revenue_cost_detail
+      - yh_doc_cdm.dws_non_share_revenue_cost_detail
+      - yh_doc_ads.ads_fm_construction_schedule
+    core_lineage:
+      - yh_doc_cdm.dws_non_share_revenue_cost_detail
+      - yh_doc_ads.ads_non_share_revenue_cost_detail
+      - yh_doc_ads.ads_fm_construction_schedule
+    reference: references/non-share-revenue-cost-detail-chain.md
+    status: verified_partial
+    evidence:
+      - type: trace-table
+        target: yh_doc_cdm.dws_non_share_revenue_cost_detail
+        date: '2026-07-06'
+        note: PROD node 210003073026 builds SAP口径 DWS; income filters 6001/6051 and cost filters 6401/6402.
+      - type: trace-table
+        target: yh_doc_ads.ads_non_share_revenue_cost_detail
+        date: '2026-07-06'
+        note: PROD node 210003073749 reads DWS same partition and keeps the same structure.
+      - type: inspect-table
+        target: yh_doc_ads.ads_fm_construction_schedule
+        date: '2026-07-06'
+        note: Verified construction fields yearmonth, wbs, vbeln, cl_cost, f_cost, amt_lscb, z_income, qz_lj, sf_wg, plan_income and plan_cost exist.
+
+  - id: order_shipment_split_mkt
+    display_name: 销售订单出库情况报表
+    aliases:
+      - 出库表
+      - 出库情况表
+      - 出库情况报表
+      - 销售订单出库情况报表
+      - 销售订单出库表
+      - 订单出库表
+      - 发货表
+      - 订单发货汇总
+      - 雨虹收入成本毛利出库表
+    perspective: 订单/发票/出库视角
+    primary_tables:
+      - yh_doc_cdm.dwd_order_shipment_split_mkt
+    related_tables:
+      - yh_doc_cdm.dwd_order_shipment_split_gggs
+    reference: references/order-shipment-chain.md
+    status: verified_partial
+    evidence:
+      - type: trace-table
+        target: yh_doc_cdm.dwd_order_shipment_split_mkt
+        date: '2026-06-24'
+        note: PROD node 210002682128, comment 工建订单发货汇总(材料销售/工程施工), order/shipment/invoice output table.
+  - id: asset_statement_diff_summary_gcsg
+    display_name: 总单与资产差异汇总表（工程施工）
+    aliases:
+      - 总单与资产差异汇总表
+      - 对账单总单与资产汇总差异核对
+      - 总单与资产差异汇总表（工程施工）
+      - 资产差异汇总表工程施工
+      - 工程施工资产差异
+      - ads_asset_statement_diff_summary_gcsg
+    perspective: 对账单总单 vs 资产汇总核对（工程施工）
+    primary_tables:
+      - yh_doc_ads.ads_asset_statement_diff_summary_gcsg
+      - yh_doc_cdm.dws_asset_statement_diff_summary_gcsg
+    core_lineage:
+      - yh_doc_cdm.dwd_mks_account_statement_consolidation_gcsg
+      - yh_doc_cdm.dwd_mks_asset_detail_merge_for_account_statement
+      - yh_doc_ods.ods_mks_yh_asset_account_all_withdrawal_f
+      - yh_doc_cdm.dws_asset_statement_diff_summary_gcsg
+      - yh_doc_ads.ads_asset_statement_diff_summary_gcsg
+    reference: references/asset-statement-diff-gcsg-chain.md
+    status: verified_partial
+    evidence:
+      - type: trace-table
+        target: yh_doc_ads.ads_asset_statement_diff_summary_gcsg
+        date: '2026-06-25'
+        note: PROD ADS node 210002653565 reads yh_doc_cdm.dws_asset_statement_diff_summary_gcsg and filters diff_metric_type_name including 垫资.
+      - type: trace-table
+        target: yh_doc_cdm.dws_asset_statement_diff_summary_gcsg
+        date: '2026-06-25'
+        note: PROD DWS node 210002653528 builds asset_sum from dwd_mks_asset_detail_merge_for_account_statement and joins withdrawal_f for refund classification.
+      - type: inspect-table
+        target: yh_doc_ods.ods_mks_yh_asset_account_all_withdrawal_f
+        date: '2026-06-25'
+        note: Verified flow_type and whether_advance fields exist; whether_advance comment is 是否垫资款 and flow_type comment is 流程类型 1-改造后.
+      - type: case
+        target: contract_code=YH30-GS-2022-0144, project_wbs_num=DL-G0220600
+        date: '2026-07-02'
+        note: Verified receivablebalance diff at pt=20260701. ADS/DWS shows statement 108762.65, asset 122193.84, diff -13431.19. The asset-side extra amount is one enabled cash asset detail row id 1684803932552347650 from dwd_mkt_cust_asset_detail: account ZH22122800213, source_num YH30-GS-2022-0144, transaction_source_type_name 工程垫资税金, transaction_type_name 支出, transaction_amt -13431.19. Excluding this row makes asset receivablebalance equal the statement value.
+  - id: distributor_output_detail_hxzzu
+    display_name: 渠道商产值表
+    aliases:
+      - 渠道商产值表
+      - dwd_fm_distributor_detail_hxzzu_migration
+      - dwd_fm_distributor_detail_initial_migration
+      - 渠道商资产产值初始明细表
+    perspective: 渠道/直属框架合同客户、资产、产值、回款按客户和组织展开的明细
+    primary_tables:
+      - yh_doc_cdm.dwd_fm_distributor_detail_hxzzu_migration
+      - yh_doc_cdm.dwd_fm_distributor_detail_initial_migration
+    core_lineage:
+      - yh_doc_cdm.dwi_erm_yh_contract_main
+      - yh_doc_cdm.dwi_erm_yh_client_info
+      - yh_doc_cdm.dwi_erm_yh_contract_framework
+      - yh_doc_cdm.dwd_order_shipment_split
+      - yh_doc_cdm.dws_mks_order_shipment_split_multiple
+      - yh_doc_cdm.dwd_fm_collection_detail_policy_final
+      - yh_doc_cdm.dwd_fm_distributor_detail_initial_migration
+      - yh_doc_cdm.dwd_fm_distributor_detail_hxzzu_migration
+    reference: references/distributor-output-detail-hxzzu-chain.md
+    status: verified_partial
+    evidence:
+      - type: trace-table
+        target: yh_doc_cdm.dwd_fm_distributor_detail_hxzzu_migration
+        date: '2026-07-16'
+        note: PROD node 210002201874 reads dwd_fm_distributor_detail_initial_migration, merges customers, and keeps rn=1 latest merged contract rows.
+      - type: trace-table
+        target: yh_doc_cdm.dwd_fm_distributor_detail_initial_migration
+        date: '2026-07-16'
+        note: PROD node 210002201870 starts from dwi_erm_yh_contract_main where contract_status=19 and contract_sort_2 in GH/ZH/GK/ZK, then keeps GK/ZK framework contracts with tmp_main.COL1=1 and final rn=1.
+      - type: case
+        target: contract_code=YG01-GK-2026-0252, customer=72091116, pt=20260715
+        date: '2026-07-16'
+        note: Verified the contract exists in current dwi_erm_yh_contract_main and ranks rn=1 for customer 72091116 / org 50092700, but the downstream distributor tables last refreshed before the source table etl_date 2026-07-16 12:31:47, so the latest downstream partition still keeps old contract 6JGK190109.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
@@ -134,3 +135,69 @@ class DataWorksReadOnlyClient:
             project_env=self.settings.project_env,
         )
         return str(response.get("Data") or "")
+
+    def get_node_parents(self, node_id: int) -> list[dict[str, Any]]:
+        response = self._call(
+            "get_node_parents",
+            "GetNodeParentsRequest",
+            node_id=int(node_id),
+            project_env=self.settings.project_env,
+        )
+        return _extract_data_rows(response, "Nodes")
+
+    def get_node_children(self, node_id: int) -> list[dict[str, Any]]:
+        response = self._call(
+            "get_node_children",
+            "GetNodeChildrenRequest",
+            node_id=int(node_id),
+            project_env=self.settings.project_env,
+        )
+        return _extract_data_rows(response, "Nodes")
+
+    def list_instances(self, **kwargs: Any) -> list[dict[str, Any]]:
+        request_kwargs = {
+            "project_env": self.settings.project_env,
+            "order_by": "INSTANCE_ID_DESC",
+            **_format_list_instance_dates(_drop_none(kwargs)),
+        }
+        response = self._call("list_instances", "ListInstancesRequest", **request_kwargs)
+        return _extract_data_rows(response, "Instances")
+
+    def get_instance_log(self, instance_id: int) -> str:
+        response = self._call(
+            "get_instance_log",
+            "GetInstanceLogRequest",
+            instance_id=int(instance_id),
+            project_env=self.settings.project_env,
+        )
+        return str(response.get("Data") or "")
+
+
+def _drop_none(values: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in values.items() if value is not None and value != ""}
+
+
+_BIZDATE_RE = re.compile(r"^\d{8}$")
+
+
+def _format_list_instance_dates(values: dict[str, Any]) -> dict[str, Any]:
+    formatted = dict(values)
+    for key in ("bizdate", "begin_bizdate", "end_bizdate"):
+        value = formatted.get(key)
+        if isinstance(value, str) and _BIZDATE_RE.fullmatch(value):
+            suffix = "23:59:59" if key == "end_bizdate" else "00:00:00"
+            formatted[key] = f"{value[:4]}-{value[4:6]}-{value[6:8]} {suffix}"
+    return formatted
+
+
+def _extract_data_rows(response: dict[str, Any], list_key: str) -> list[dict[str, Any]]:
+    data = response.get("Data") or []
+    if isinstance(data, dict):
+        rows = data.get(list_key) or data.get(list_key.lower()) or data.get("Data") or data.get("data") or []
+    else:
+        rows = data
+    if isinstance(rows, dict):
+        rows = [rows]
+    if not isinstance(rows, list):
+        return [{"value": rows}]
+    return [row if isinstance(row, dict) else {"value": row} for row in rows]
