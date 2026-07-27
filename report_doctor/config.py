@@ -16,6 +16,8 @@ REQUIRED_ENV_KEYS = (
     "ODPS_ENDPOINT",
 )
 
+DEFAULT_ODPS_SQL_TIMEOUT_SECONDS = 300
+
 
 @dataclass(frozen=True)
 class OdpsSettings:
@@ -23,6 +25,7 @@ class OdpsSettings:
     secret_access_key: str
     project: str
     endpoint: str
+    sql_timeout_seconds: int = DEFAULT_ODPS_SQL_TIMEOUT_SECONDS
 
 
 @dataclass(frozen=True)
@@ -135,6 +138,11 @@ def _odps_settings_from_values(merged: dict[str, str], path: Path) -> OdpsSettin
         secret_access_key=merged["ALIBABA_CLOUD_ACCESS_KEY_SECRET"],
         project=merged["ODPS_PROJECT"],
         endpoint=merged["ODPS_ENDPOINT"],
+        sql_timeout_seconds=_positive_int_setting(
+            merged,
+            "ODPS_SQL_TIMEOUT_SECONDS",
+            default=DEFAULT_ODPS_SQL_TIMEOUT_SECONDS,
+        ),
     )
 
 
@@ -164,6 +172,24 @@ def _dataworks_settings_from_values(merged: dict[str, str], path: Path) -> DataW
         project_id=project_id,
         project_identifier=project_identifier,
     )
+
+
+def _positive_int_setting(
+    merged: dict[str, str],
+    key: str,
+    *,
+    default: int,
+) -> int:
+    raw_value = (merged.get(key) or "").strip()
+    if not raw_value:
+        return default
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise ValueError(f"{key} must be a positive integer, got: {raw_value}") from exc
+    if value <= 0:
+        raise ValueError(f"{key} must be a positive integer, got: {raw_value}")
+    return value
 
 
 def load_dataworks_settings(

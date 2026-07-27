@@ -1,5 +1,12 @@
 # 四停项目信息表链路
 
+## 已验证回款识别规则（2026-07-22）
+
+- `dwd_fm_collection_detail` 的报表 WBS 来自 SAP `BSEG.KIDNO`；材料销售直属客户按 `WBS + 付款方` 关联 `dim_receivable_contract_migration` 补充合同。
+- 共享平台的收款/认领单审批结束，不代表已经计入应收报表回款。只有有效 SAP 回款凭证以正确 WBS/合同进入 `dwd_fm_collection_detail` 后，金额才会影响 `dmbtr_hk_acc`。
+- 银行流水若 `userd_amount=0`、`occupy_amount=0` 且 `balance_amount=total_amount`，则对本报表仍是未使用状态，即使关联单据为 `bill_status='END_APPROVAL'`。
+- 生产案例：WBS `X-YH10260223`、合同 `YH10-ZX-2026-0225`、付款方 `0060286965`、`pt=20260721`。两笔银行流水合计 945,000 元但全部未使用，因此报表 `dmbtr_hk_acc=0`、`ar_due_amount=283,500`。其中 300,000 元 SAP 凭证被记到 WBS `X-YH10260150` / 合同 `YH10-ZX-2026-0155`，之后又全额冲销。按生产直属客户公式只读模拟，若 945,000 元有效计入目标 WBS，到期应收和应收余额都会降为 0。
+
 ## 适用范围
 
 - 报表：`yh_doc_ads.ads_information_of_the_four_stop_project`
@@ -42,3 +49,33 @@
 ## 权限注意事项
 
 应优先查询 `yh_doc_ads` / `yh_doc_cdm` 新湖仓表。只有用户明确排查旧湖仓任务时，才使用 `dfyh_*` 表。
+
+## 已验证口径：应收政策明细中的工程存货
+
+`ads_fm_accounts_receivable_policy_final.engineering_inventory_ap` 是“工程存货（剔除预收）”，不是从库存实物明细直接取数。生产链路为：
+
+`ads_fm_accounts_receivable_policy_final`
+<- `dwd_fm_accounts_receivable_policy_final`
+<- `dwd_fm_accounts_receivable_policy_init`
+<- `dwd_fm_accounts_receivable_cooperate`
+<- `dwd_fm_accounts_receivable_due_summary`
+<- 工程施工收入成本链路。
+
+在 `dwd_fm_accounts_receivable_due_summary` 中，只有 `contract_class_cd='30'` 且 `cust_type='ZSKH'` 的工程施工直属客户项目才取工程存货：
+
+- `forecast_revenue_pjtd = ei.forecast_revenue_pjtd`
+- `revenue_visa_pjtd = ei.revenue_visa_pjtd`
+- `engineering_inventory = max(forecast_revenue_pjtd - revenue_visa_pjtd, 0)`
+- `engineering_inventory_negative = forecast_revenue_pjtd - revenue_visa_pjtd`
+
+下游 ADS 再计算：
+
+- `engineering_inventory_ap = max(engineering_inventory - advance_payment, 0)`（生产 SQL 还带有 collection_ratio 判负保护）
+- `dmbtr_ar_ei = dmbtr_ar + engineering_inventory_ap`
+
+工程施工收入来源分两块相加：
+
+- 新口径：`dwd_fin_income_cost_detail_assess_excl_policy` <- `dws_fin_income_cost_detail_profit_exclusion` <- `dws_fin_income_cost_detail_assess` <- `dws_fin_income_cost_detail_assess_gcsg` <- `dws_fin_income_cost_detail_assess_base_tmp` <- `dwd_fin_voucher_link` <- `dwd_fin_voucher_f_link`。
+- 旧初始口径：`dwi_di_wbs_balance_t_f`，`year='2023'`、`contract_data_type='GCSG-ZS-KH'`。
+
+案例验证：2026-07-20 查 `pt=20260719`、WBS `QG-PPQ20070`、客户 `0072112335`，ADS `engineering_inventory_ap=9414.122304238637`。拆解为新口径测算收入 `9414.104158766390515717`、旧初始测算收入 `0.008145472247279563`、旧初始签证收入 `-0.01`，合计 `forecast_revenue_pjtd=9414.11230423863779528`、`revenue_visa_pjtd=-0.01`、`advance_payment=0`，所以工程存货为 `9414.11230423863779528 - (-0.01) = 9414.12230423863779528`。

@@ -88,6 +88,14 @@ ODPS_PROJECT=
 ODPS_ENDPOINT=
 ```
 
+Optional ODPS SQL timeout guardrail:
+
+```text
+ODPS_SQL_TIMEOUT_SECONDS=300
+```
+
+This limits each submitted ODPS SQL instance to 300 seconds by default. On timeout, the gateway attempts to stop the MaxCompute instance before returning an error. This is different from `--limit`: `--limit` only limits returned rows after execution and does not reduce the SQL compute cost.
+
 Optional DataWorks lookup values:
 
 ```text
@@ -111,6 +119,19 @@ python .\scripts\start_gateway.py
 When prompted, enter the `.env.enc` password locally. Keep this PowerShell window open.
 
 The gateway writes a local `gateway_state.json` containing a loopback URL and temporary token. This file is ignored by git and is only used by `gateway_query.py` on the same machine.
+
+By default, one ODPS SQL statement can run for up to 300 seconds. To temporarily change this for a local session, set the value before starting the gateway:
+
+```powershell
+$env:ODPS_SQL_TIMEOUT_SECONDS='600'
+python .\scripts\start_gateway.py
+```
+
+The command-line client waits slightly longer than the server timeout by default. If you raise the SQL timeout above 300 seconds, also raise the client wait time in the agent's shell:
+
+```powershell
+$env:ODPS_GATEWAY_HTTP_TIMEOUT_SECONDS='630'
+```
 
 ## Partition Ambiguity
 

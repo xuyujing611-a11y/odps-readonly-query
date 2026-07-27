@@ -1,5 +1,5 @@
 version: 1
-updated_at: '2026-07-02'
+updated_at: '2026-07-24'
 update_policy:
   evidence_required: true
   stable_fact_only: true
@@ -9,6 +9,74 @@ update_policy:
     - unverified_guess
     - temporary_table_or_one_off_sql
 reports:
+  - id: emf_werks_storage_age
+    display_name: ads_emf_werks_storage_age factory storage age
+    aliases:
+      - ads_emf_werks_storage_age
+      - factory storage age
+      - werks storage age
+      - redundancy_qty
+      - redundancy amount
+    perspective: Factory/material inventory aging and redundancy metrics from SAP material-document movements.
+    primary_tables:
+      - yh_doc_ads.ads_emf_werks_storage_age
+    core_lineage:
+      - yh_doc_cdm.dwi_sap_matdoc
+      - yh_doc_cdm.dwi_mdm_wljc_query
+      - yh_doc_cdm.dim_storage_age
+      - yh_doc_ads.ads_emf_werks_storage_age
+    reference: references/emf-werks-storage-age-chain.md
+    status: verified_partial
+    evidence:
+      - type: trace-table
+        target: yh_doc_ads.ads_emf_werks_storage_age
+        date: '2026-07-21'
+        note: PROD node 210002302945 computes redundancy_qty as stock_qty_z when storage_age is greater than the material redundancy cycle from dwi_mdm_wljc_query.desc97, defaulting to 180 days.
+      - type: case
+        target: matnr=HS-VP1813, werks=RY01, pt=20260720, month_id=202607
+        date: '2026-07-21'
+        note: Verified redundancy_qty=950 from two allocated aging source rows: 900 at storage_age=238 and 50 at storage_age=588. The current model's aging receipt set includes 101/131/411/501/531/561 and inter-plant 301, while positive 309/644/673 movements affect stock balance but are not aging receipt sources.
+  - id: supply_chain_logistics_freight
+    display_name: 物流运费明细/业务考核
+    aliases:
+      - 物流运费
+      - 物流运费明细表
+      - 虹运物流运费业务考核表
+      - ads_supp_trans_fee_dtl
+      - ads_supp_trans_fee_assess_dtl
+      - dws_supp_trans_fee_dtl
+      - dwd_supp_trans_fee_dtl_logic
+      - 合计C
+      - 标准收入
+      - 毛利额
+    perspective: 订单、发运、运输费用、开票与业务考核在出库凭证行粒度的统一口径
+    primary_tables:
+      - yh_doc_ads.ads_supp_trans_fee_dtl
+      - yh_doc_ads.ads_supp_trans_fee_assess_dtl
+    core_lineage:
+      - yh_doc_cdm.dwd_supp_trans_fee_dtl_logic
+      - yh_doc_cdm.dws_supp_trans_fee_dtl
+      - yh_doc_ads.ads_supp_trans_fee_dtl
+      - yh_doc_ads.ads_supp_trans_fee_assess_dtl
+    reference: references/supply-chain-logistics-freight-chain.zh.md
+    status: verified_partial
+    evidence:
+      - type: trace-table
+        target: yh_doc_ads.ads_supp_trans_fee_dtl
+        date: '2026-07-20'
+        note: PROD node 210001981426 reads yh_doc_cdm.dws_supp_trans_fee_dtl and exposes the freight detail fields to ADS.
+      - type: trace-table
+        target: yh_doc_cdm.dws_supp_trans_fee_dtl
+        date: '2026-07-20'
+        note: PROD node 210003059802 reads yh_doc_cdm.dwd_supp_trans_fee_dtl_logic; ADS/DWS are mostly pass-through for core freight metrics.
+      - type: trace-table
+        target: yh_doc_cdm.dwd_supp_trans_fee_dtl_logic
+        date: '2026-07-20'
+        note: PROD node 210001981425 computes standard income and gross profit with regular, OEM uplift, missing-standard-price, and offline branches.
+      - type: sql
+        target: yh_doc_ads.ads_supp_trans_fee_dtl pt=20260719
+        date: '2026-07-20'
+        note: Verified 4,297,143 rows; std_income and gross_profit are non-null on 4,295,051 rows and invoicing_amt is non-null on 4,295,442 rows.
   - id: four_stop_project_information
     display_name: 四停项目信息表
     aliases:
@@ -17,6 +85,10 @@ reports:
       - 到期应收四停
       - 未四停项目
       - ads_information_of_the_four_stop_project
+      - ads_fm_accounts_receivable_policy_final
+      - accounts receivable policy final
+      - engineering_inventory
+      - 工程存货
     perspective: 到期应收、集采宽限、票据抵扣与风控手工四停综合判定
     primary_tables:
       - yh_doc_ads.ads_information_of_the_four_stop_project
@@ -44,6 +116,14 @@ reports:
         target: wbs=X-YH38260002, customer=60519411, pt=20260715
         date: '2026-07-16'
         note: Verified ar_due_amount=47226.50 and no_receivable_amount=138356.26 in the new-lakehouse production chain. The siting net amount is -91129.76, so the project remains not stopped. The collective-purchase list has no matching row.
+      - type: case
+        target: wbs=QG-PPQ20070, customer=0072112335, pt=20260719
+        date: '2026-07-20'
+        note: Verified ads_fm_accounts_receivable_policy_final.engineering_inventory_ap=9414.122304238637. The value comes from engineering construction direct-customer logic in dwd_fm_accounts_receivable_due_summary: max(forecast_revenue_pjtd - revenue_visa_pjtd, 0), then minus advance_payment in downstream ADS. For this WBS, forecast=9414.112304238637, visa=-0.01, advance_payment=0.
+      - type: rule-validation
+        target: collection recognition for ads_fm_accounts_receivable_policy_final
+        date: '2026-07-22'
+        note: Verified that report collection WBS comes from SAP BSEG.KIDNO through dwd_fm_collection_detail and direct material-sales contract enrichment matches WBS plus payer. Shared bank flows or completed recognition documents do not affect dmbtr_hk_acc until an effective SAP collection posting reaches the target WBS. For X-YH10260223 / YH10-ZX-2026-0225, two bank flows totaling 945000 remained unused and report collection was 0; simulation showed correct target posting would reduce due receivable from 283500 to 0.
   - id: fin_profit_loss_year_vs_income_cost_assess_fty
     display_name: 损益年累计表 vs 工厂考核收入明细表
     aliases:
@@ -287,3 +367,140 @@ reports:
         target: contract_code=YG01-GK-2026-0252, customer=72091116, pt=20260715
         date: '2026-07-16'
         note: Verified the contract exists in current dwi_erm_yh_contract_main and ranks rn=1 for customer 72091116 / org 50092700, but the downstream distributor tables last refreshed before the source table etl_date 2026-07-16 12:31:47, so the latest downstream partition still keeps old contract 6JGK190109.
+  - id: rsp_purchase_order_receipt_audit
+    display_name: RSP 采购订单收货稽核
+    aliases:
+      - RSP采购订单收货稽核
+      - 采购订单发货收货在途稽核
+      - ads_rsp_purchase_order_receipt_audit_detail
+    perspective: 采购订单行的 SAP、协同域、OMS、库存域发货收货及在途逐段稽核
+    primary_tables:
+      - yh_doc_ads.ads_rsp_purchase_order_receipt_audit_detail
+      - yh_doc_cdm.dwi_rsp_purchase_order_line
+    core_lineage:
+      - yh_doc_cdm.dwi_rsp_purchase_order
+      - yh_doc_cdm.dwi_rsp_delivery_detail
+      - yh_doc_cdm.dwi_rsp_inventory_detail
+      - yh_doc_cdm.dwi_otwb_oms_order
+      - yh_doc_cdm.dwi_otwb_oms_order_detail
+      - yh_doc_cdm.dwi_rsp_inventory_inventory_execute_task
+      - yh_doc_cdm.dwi_sap_eket
+      - yh_doc_cdm.dwi_sap_ztmm0140a
+      - yh_doc_ads.ads_rsp_purchase_order_receipt_audit_detail
+    reference: references/rsp-purchase-order-receipt-audit-chain.zh.md
+    status: verified
+    evidence:
+      - type: trace-table
+        target: yh_doc_cdm.dwi_sap_ztmm0140a
+        date: '2026-07-20'
+        note: PROD node 210003284839 reads yh_doc_ods.ods_s4_ztmm0140a; active LFIMG values in pt=20260719 are numeric.
+      - type: trace-table
+        target: yh_doc_cdm.dwi_rsp_inventory_inventory_execute_task
+        date: '2026-07-20'
+        note: PROD node 210003297782 reads yh_doc_ods.ods_rsp_inventory_inventory_execute_task_f; purchase lines join purchaseReceipt tasks by source_document_number and source_document_line_number.
+      - type: validation
+        target: yh_doc_ads.ads_rsp_purchase_order_receipt_audit_detail
+        date: '2026-07-20'
+        note: Read-only model SQL on pt=20260719 returned 19467 rows and 19467 distinct purchase line IDs; OMS and SAP transit equation error counts were zero. Target table was not yet present in PROD.
+      - type: validation
+        target: data_refresh_time
+        date: '2026-07-20'
+        note: MaxCompute GETDATE returns DATETIME. SELECT CAST(GETDATE() AS TIMESTAMP) was verified through the read-only gateway and is required when inserting into the TIMESTAMP target column.
+      - type: post-deploy-validation
+        target: yh_doc_ads.ads_rsp_purchase_order_receipt_audit_detail, pt=20260719
+        date: '2026-07-20'
+        note: PROD partition has 19467 rows and 19467 distinct purchase line IDs, with zero duplicate, zero source-missing, zero target-extra, zero invalid overall status, zero OMS/SAP equation errors, and zero status-to-diff consistency errors across all eight audit stages.
+      - type: validity-filter-impact
+        target: yh_doc_ads.ads_rsp_purchase_order_receipt_audit_detail, pt=20260720
+        date: '2026-07-21'
+        note: Current line-level filters retain purchase lines whose latest order head is logically deleted, cancelled, or issuedFailed. PROD impact is 205 orders / 252 lines out of 19631 active lines. Treat excluding these three explicit invalid-head categories as a proposed business rule pending confirmation; do not conflate them with ordinary data-missing rows.
+      - type: field-source-validation
+        target: purchase_order_create_time, pt=20260720
+        date: '2026-07-21'
+        note: For ADS purchase order receipt audit, the verified source for purchase order creation time is yh_doc_cdm.dwi_rsp_purchase_order.create_time from the latest order head by order_number. Current ADS schema has no purchase-order creation date/time column. order_date is not a safe substitute because 13620 of 19631 ADS lines differ from create_time.
+      - type: case
+        target: rsp_order=CD2025121900000029, sap_order=8950418141, pt=20260720
+        date: '2026-07-21'
+        note: ADS has two EXTERNAL lines with SAP shipment missing. ZTMM0140A contains LFIMG 600/800 for lines 000010/000020, but both rows have LOEKZ='X' (delete mark), so the current model filter excluding nonblank LOEKZ removes them. Removing that filter would recover 46 current external missing ADS lines across 33 orders, so this is a business-rule confirmation item rather than a one-order exception.
+      - type: cross-source-validation
+        target: yh_doc_cdm.dwi_sap_ztmm0140a.loekz vs yh_doc_cdm.dwi_sap_ekpo.loekz, pt=20260720
+        date: '2026-07-21'
+        note: Comparing by ebeln plus numeric-normalized ebelp shows ZTMM0140A and EKPO delete marks are not identical. Matched line result: 444047 same lines, 11852 lines where ZTMM0140A is deleted but EKPO is active, and 2069 lines where ZTMM0140A is active but EKPO is deleted. For SAP order 8950418141 lines 00010/00020, ZTMM0140A.loekz='X' while EKPO.loekz is blank.
+  - id: grin_accounts_detail
+    display_name: 采购暂估明细表
+    aliases:
+      - 采购暂估明细表
+      - ads_grin_accounts_dtl
+      - GR/IR 暂估明细
+      - 未税暂估金额
+    perspective: 采购订单收货、发票校验、运杂费和暂估金额明细
+    primary_tables:
+      - yh_doc_ads.ads_grin_accounts_dtl
+      - yh_doc_ads.ads_mm_purchase_order_receipt_details
+    core_lineage:
+      - yh_doc_ads.ads_mm_purchase_order_receipt_details
+      - yh_doc_ads.ads_grin_accounts_dtl
+    reference: references/grin-accounts-detail-chain.zh.md
+    status: verified_partial
+    evidence:
+      - type: trace-table
+        target: yh_doc_ads.ads_grin_accounts_dtl
+        date: '2026-07-21'
+        note: PROD node 210002435013 builds the purchase accrual detail from ads_mm_purchase_order_receipt_details plus supplier, company, freight, invoice, and elimination logic.
+      - type: trace-table
+        target: yh_doc_ads.ads_mm_purchase_order_receipt_details
+        date: '2026-07-21'
+        note: PROD node 210002298619 provides delivered quantity, material invoicing quantity, delivery amount, billing voucher, SOA, and invoice status.
+      - type: case
+        target: pt=20260720, supplier 70300626, ebeln 8930139991 lines 20/40
+        date: '2026-07-21'
+        note: Verified delivered_num=10 and material_invoicing_num=10, so final material_no_tax_dmbtr is 0 even though upstream delivery_no_tax_amt is 37.61.
+      - type: case
+        target: pt=20260720, supplier 60336720, ebeln 8920131758 line 10
+        date: '2026-07-21'
+        note: Verified delivered_num=749590, material_invoicing_num=0, billing_voucher_cd and SOA are null, so final material_no_tax_dmbtr is 6876.97 by the material accrual formula.
+  - id: manager_portal_sales_achievement_product
+    display_name: manager portal sales achievement product
+    aliases:
+      - ads_fm_glzmh_xsdc_product
+      - ads_fm_glzmh_xsdc_product_original
+      - ads_fm_revence_cost_new_assessment_details
+      - manager portal sales achievement
+      - management portal yoy growth
+      - glzmh xsdc product
+    perspective: Management portal overall sales achievement cards by make_day, including assessment income, same-period assessment income, monthly income, and daily income.
+    primary_tables:
+      - yh_doc_ads.ads_fm_glzmh_xsdc_product
+      - yh_doc_ads.ads_fm_glzmh_xsdc_product_original
+      - yh_doc_ads.ads_fm_revence_cost_new_assessment_details
+    reference: references/manager-portal-sales-achievement-product-chain.md
+    status: verified_partial
+    evidence:
+      - type: sql
+        target: yh_doc_ads.ads_fm_glzmh_xsdc_product, pt=20260723, make_day=20260723
+        date: '2026-07-24'
+        note: Current PC portal overall card matched the latest partition product table: SUM(ljkhsr_bn)=72.242347e8, SUM(ljkhsr_qntq)=72.331704e8, yoy=-0.123539%, month income 6.1746e8, day income 3164.08w. Recompute overall yoy from summed numerators and denominators; do not average or sum row-level tbzs.
+      - type: caveat
+        target: same make_day across product vs product_original and old partitions
+        date: '2026-07-24'
+        note: product_original at pt=20260722, make_day=20260723 produced yoy=-0.8725%, close to a -0.8% manual result, but it did not match the screenshot. Latest product at pt=20260723, make_day=20260723 matched the portal -0.1% display.
+      - type: trace-table
+        target: product vs product_original executable logic
+        date: '2026-07-24'
+        note: PROD product node 210002212517 and product_original node 210002212355 both read yh_doc_cdm.dws_fm_mngrprtl_slschvmnt_product. product_original adds AND is_reduced=0 at the DWS read; product does not. For pt=20260723, make_day=20260723, product minus original equals 0.029854e8 current income and -0.821916e8 same-period income, matching the is_reduced=1/K97 amounts.
+      - type: model-change-guidance
+        target: change only same-period fields in yh_doc_ads.ads_fm_glzmh_xsdc_product
+        date: '2026-07-24'
+        note: To keep product current-year metrics unchanged while making same-period revenue fields use is_reduced=0, do not add AND is_reduced=0 to the DWS source WHERE. Instead pass is_reduced through the fm_glzmh_xsdc_product CTE and conditionally SUM relevant last_year_* revenue/profit fields in fm_glzmh_xsdc_product_a. For pt=20260723/make_day=20260723, current income would remain 72.242347e8, same-period income would become 73.153620e8, and yoy would be -1.245698%.
+      - type: sql
+        target: income-table upstream layers for yh_doc_ads.ads_fm_glzmh_xsdc_product, pt=20260723
+        date: '2026-07-24'
+        note: The finance income-table model direct group filter grp_cd=51026719 gives dws_fin_income_cost_detail_assess_mkt income 72.242347e8 for 2026 YTD and 71.757847e8 for 2025 same period, yoy=0.675187%; ADS income-cost detail matches this. Manager-portal policy detail with assessment_group_cd_zx=51026719 gives 74.714773e8 / 72.005390e8 before final portal organization scope. Final portal product ADS gives 72.242347e8 / 72.331704e8, yoy=-0.123539%.
+      - type: sql
+        target: yh_doc_ads.ads_fm_revence_cost_new_assessment_details, pt=20260723
+        date: '2026-07-24'
+        note: Same-period processed revenue detail using kh_year=2025, calday 20250101-20250723, assessment_group_cd_zx=51026719 gives SUM(dmbtr_dy)=72.005390e8. Original group 51026719 contributes 71.782579e8 and original group 50099044 remapped into latest construction group contributes 0.222811e8. This is 0.326314e8 below final portal product SUM(ljkhsr_qntq)=72.331704e8.
+      - type: rule-validation
+        target: K97 handling for manager portal same-period income, pt=20260723
+        date: '2026-07-24'
+        note: K97 must be identified by revenue_tag_name, not fkart. For latest organization assessment_group_cd_zx=51026719, 2025 same-period K97 in ads_fm_revence_cost_new_assessment_details is -0.821916e8 across 7480 rows; 2026 YTD K97 is 0.029854e8 across 278 rows. Subtracting these K97 amounts from ads_fm_glzmh_xsdc_product reconciles to ads_fm_glzmh_xsdc_product_original totals. dws_fm_revenue_summary collapses revenue_tag_name in (..., K97, K98) into is_reduced=1, downstream DWS keeps only is_reduced, and final ads_fm_glzmh_xsdc_product exposes neither revenue_tag_name nor is_reduced. Precise K97-only exclusion should be done before or inside dws_fm_revenue_summary for the manager-portal branch, not in final ADS.

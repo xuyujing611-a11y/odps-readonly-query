@@ -44,6 +44,12 @@ The gateway listens on localhost. If shell proxy variables such as `http_proxy`,
 $env:NO_PROXY='127.0.0.1,localhost'; $env:no_proxy='127.0.0.1,localhost'; python .\scripts\gateway_query.py health
 ```
 
+## SQL Timeout Guardrail
+
+The gateway defaults to `ODPS_SQL_TIMEOUT_SECONDS=300`, so one submitted ODPS SQL instance can run for at most 5 minutes before the gateway attempts to stop it and returns a timeout error. Do not treat `--limit` as a compute guardrail; it limits returned rows after execution and does not make a large SQL cheaper.
+
+If a complex diagnosis legitimately needs a longer SQL, ask the human to restart the gateway with a larger local environment value such as `$env:ODPS_SQL_TIMEOUT_SECONDS='600'`. Do not bypass the gateway with direct PyODPS or ODPS command-line tools.
+
 ## Task Router
 
 - Quick row count or latest partition: use `quick-count --bizdate latest` or `latest-partition`; these default to `MAX_PT` and avoid parsing multi-token `SHOW PARTITIONS` rows. See `references/query-recipes.md`.

@@ -44,6 +44,49 @@ class LoadSettingsTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "ALIBABA_CLOUD_ACCESS_KEY_ID.*ODPS_ENDPOINT"):
                     load_settings(env_path)
 
+    def test_loads_default_and_custom_odps_sql_timeout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            env_path.write_text(
+                "\n".join(
+                    [
+                        "ALIBABA_CLOUD_ACCESS_KEY_ID=file-ak",
+                        "ALIBABA_CLOUD_ACCESS_KEY_SECRET=file-sk",
+                        "ODPS_PROJECT=file-project",
+                        "ODPS_ENDPOINT=https://example.aliyun.com/api",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.dict(os.environ, {}, clear=True):
+                default_settings = load_settings(env_path)
+            with patch.dict(os.environ, {"ODPS_SQL_TIMEOUT_SECONDS": "600"}, clear=True):
+                custom_settings = load_settings(env_path)
+
+        self.assertEqual(default_settings.sql_timeout_seconds, 300)
+        self.assertEqual(custom_settings.sql_timeout_seconds, 600)
+
+    def test_rejects_invalid_odps_sql_timeout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            env_path.write_text(
+                "\n".join(
+                    [
+                        "ALIBABA_CLOUD_ACCESS_KEY_ID=file-ak",
+                        "ALIBABA_CLOUD_ACCESS_KEY_SECRET=file-sk",
+                        "ODPS_PROJECT=file-project",
+                        "ODPS_ENDPOINT=https://example.aliyun.com/api",
+                        "ODPS_SQL_TIMEOUT_SECONDS=0",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.dict(os.environ, {}, clear=True):
+                with self.assertRaisesRegex(ValueError, "ODPS_SQL_TIMEOUT_SECONDS"):
+                    load_settings(env_path)
+
     def test_load_dataworks_settings_defaults_to_user_region_and_prod(self):
         with tempfile.TemporaryDirectory() as tmp:
             env_path = Path(tmp) / ".env"

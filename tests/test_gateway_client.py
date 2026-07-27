@@ -1,12 +1,16 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from report_doctor.gateway_client import (
+    DEFAULT_GATEWAY_HTTP_TIMEOUT_SECONDS,
     append_evidence_log,
     build_parser,
     check_health,
+    gateway_http_timeout_seconds,
     latest_partition_rows,
     payload_from_args,
     save_node_code_rows,
@@ -14,6 +18,20 @@ from report_doctor.gateway_client import (
 
 
 class GatewayClientTests(unittest.TestCase):
+    def test_gateway_http_timeout_defaults_above_sql_timeout_and_can_be_overridden(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(gateway_http_timeout_seconds(), DEFAULT_GATEWAY_HTTP_TIMEOUT_SECONDS)
+
+        self.assertGreaterEqual(DEFAULT_GATEWAY_HTTP_TIMEOUT_SECONDS, 330)
+
+        with patch.dict(os.environ, {"ODPS_GATEWAY_HTTP_TIMEOUT_SECONDS": "360"}, clear=True):
+            self.assertEqual(gateway_http_timeout_seconds(), 360)
+
+    def test_gateway_http_timeout_rejects_invalid_override(self):
+        with patch.dict(os.environ, {"ODPS_GATEWAY_HTTP_TIMEOUT_SECONDS": "0"}, clear=True):
+            with self.assertRaisesRegex(ValueError, "ODPS_GATEWAY_HTTP_TIMEOUT_SECONDS"):
+                gateway_http_timeout_seconds()
+
     def test_latest_partition_rows_falls_back_to_partitions_fetcher(self):
         seen_payloads = []
 

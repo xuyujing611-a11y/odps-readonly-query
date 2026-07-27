@@ -27,12 +27,14 @@ class GatewayState:
         token: str,
         audit_path: Path,
         odps_project: str,
+        sql_timeout_seconds: int,
         dataworks_client=None,
     ):
         self.odps = odps
         self.token = token
         self.audit_path = audit_path
         self.odps_project = odps_project
+        self.sql_timeout_seconds = sql_timeout_seconds
         self.dataworks_client = dataworks_client
 
     def execute(
@@ -42,7 +44,13 @@ class GatewayState:
         *,
         hints: dict[str, str] | None = None,
     ) -> list[dict[str, object]]:
-        return execute_sql_to_dicts(self.odps, sql, limit=limit, hints=hints)
+        return execute_sql_to_dicts(
+            self.odps,
+            sql,
+            limit=limit,
+            hints=hints,
+            timeout_seconds=self.sql_timeout_seconds,
+        )
 
 
 def make_handler(state: GatewayState):
@@ -136,12 +144,14 @@ def main(argv: list[str] | None = None) -> int:
         token=token,
         audit_path=Path(args.audit_log),
         odps_project=settings.odps.project,
+        sql_timeout_seconds=settings.odps.sql_timeout_seconds,
         dataworks_client=dataworks_client,
     )
     server = ThreadingHTTPServer((args.host, args.port), make_handler(state))
     write_state(Path(args.state), port=server.server_port, token=token)
     print(f"ODPS read-only gateway listening on http://{args.host}:{server.server_port}")
     print(f"DataWorks read-only fallback: {dataworks_status}")
+    print(f"ODPS SQL timeout: {settings.odps.sql_timeout_seconds} seconds")
     print(f"State written to {args.state}")
     print("Keep this PowerShell window open. Press Ctrl+C to stop.")
     try:

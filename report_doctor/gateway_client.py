@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import urllib.error
 import urllib.request
@@ -17,6 +18,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 STATE_PATH = PROJECT_ROOT / "gateway_state.json"
 DEFAULT_NODE_CODE_DIR = PROJECT_ROOT / "outputs" / "node_code"
 LONG_EVIDENCE_VALUE_LIMIT = 2000
+DEFAULT_GATEWAY_HTTP_TIMEOUT_SECONDS = 330
 
 
 def load_state(path: str | Path = STATE_PATH) -> dict[str, str]:
@@ -26,6 +28,19 @@ def load_state(path: str | Path = STATE_PATH) -> dict[str, str]:
 def _urlopen_local(request: urllib.request.Request, *, timeout: int):
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     return opener.open(request, timeout=timeout)
+
+
+def gateway_http_timeout_seconds() -> int:
+    raw_value = (os.environ.get("ODPS_GATEWAY_HTTP_TIMEOUT_SECONDS") or "").strip()
+    if not raw_value:
+        return DEFAULT_GATEWAY_HTTP_TIMEOUT_SECONDS
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise ValueError(f"ODPS_GATEWAY_HTTP_TIMEOUT_SECONDS must be a positive integer, got: {raw_value}") from exc
+    if value <= 0:
+        raise ValueError(f"ODPS_GATEWAY_HTTP_TIMEOUT_SECONDS must be a positive integer, got: {raw_value}")
+    return value
 
 
 def post_query(payload: dict[str, Any], *, state_path: str | Path = STATE_PATH) -> list[dict[str, object]]:
@@ -41,7 +56,7 @@ def post_query(payload: dict[str, Any], *, state_path: str | Path = STATE_PATH) 
         },
     )
     try:
-        with _urlopen_local(request, timeout=120) as response:
+        with _urlopen_local(request, timeout=gateway_http_timeout_seconds()) as response:
             result = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         body_text = exc.read().decode("utf-8", errors="replace")
